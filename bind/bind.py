@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import torch
 import h5py
@@ -68,6 +69,12 @@ class BIND:
                 self.cropsize = getattr(config, 'cropsize', 128)
                 self.num_large_scales = getattr(config, 'large_scale_channels', 0)
                 self.quantile_path = getattr(config, 'quantile_path', None)
+                
+                # Resolve relative quantile_path to absolute path
+                if self.quantile_path is not None and not os.path.isabs(self.quantile_path):
+                    # Resolve relative to project root
+                    project_root = Path(__file__).parent.parent
+                    self.quantile_path = str(project_root / self.quantile_path)
                 
                 # Enable quantile normalization if path is provided
                 if self.quantile_path is not None:
