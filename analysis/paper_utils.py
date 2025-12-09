@@ -359,6 +359,60 @@ def compute_binded_power_spectra(binded_maps):
 # SECTION 4: Density Profile Analysis
 # ============================================================================
 
+def compute_radial_profile(field, center=None, nbins=20, r_max=None):
+    """
+    Compute azimuthally-averaged radial profile of a 2D field.
+    
+    Parameters
+    ----------
+    field : np.ndarray
+        2D array (e.g., density field)
+    center : tuple, optional
+        (y, x) coordinates of center. Defaults to field center.
+    nbins : int
+        Number of radial bins
+    r_max : float, optional
+        Maximum radius in pixels. Defaults to half the field size.
+        
+    Returns
+    -------
+    tuple : (r_bins, profile, profile_std)
+        r_bins : bin centers in pixels
+        profile : mean value in each radial bin
+        profile_std : standard deviation in each radial bin
+    """
+    ny, nx = field.shape
+    
+    if center is None:
+        center = (ny // 2, nx // 2)
+    
+    if r_max is None:
+        r_max = min(ny, nx) // 2
+    
+    # Create distance map
+    y, x = np.ogrid[:ny, :nx]
+    r = np.sqrt((x - center[1])**2 + (y - center[0])**2)
+    
+    # Define bins
+    bin_edges = np.linspace(0, r_max, nbins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    
+    # Compute profile
+    profile = np.zeros(nbins)
+    profile_std = np.zeros(nbins)
+    
+    for i in range(nbins):
+        mask = (r >= bin_edges[i]) & (r < bin_edges[i+1])
+        if np.sum(mask) > 0:
+            values = field[mask]
+            profile[i] = np.mean(values)
+            profile_std[i] = np.std(values)
+        else:
+            profile[i] = np.nan
+            profile_std[i] = np.nan
+    
+    return bin_centers, profile, profile_std
+
 def compute_surface_density_profile(halo_mass, radius_pix, size=128, nbins=15):
     """
     Calculate projected surface density profile in logarithmic radial bins out to 3×R200.

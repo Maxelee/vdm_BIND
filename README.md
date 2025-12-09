@@ -124,7 +124,28 @@ These files are **required** for both training and inference to ensure consisten
 
 ## 3. Training the Diffusion Model
 
-### 3.1 Training Data Requirements
+### 3.1 Training Data Generation
+
+Training data is generated from paired DMO and hydrodynamic CAMELS simulations. The pipeline extracts halo-centric cutouts with consistent multi-scale conditioning.
+
+**For complete documentation on training data generation, see:** `data_generation/README.md`
+
+**Quick Overview:**
+```bash
+# Generate training data from CAMELS simulations using MPI
+mpirun -n 64 python data_generation/process_simulations.py \
+    --output_dir /path/to/train_data \
+    --box_size 50.0 \
+    --resolution 128
+```
+
+**Key extraction parameters:**
+- **Multi-scale cutouts**: [6.25, 12.5, 25.0, 50.0] Mpc/h (must match training and inference)
+- **Resolution**: 128×128 pixels per cutout
+- **CIC interpolation**: Uses MAS_library for mass assignment
+- **Periodic boundaries**: Full periodic handling with minimum image convention
+
+### 3.2 Training Data Requirements
 
 Training requires halo-centric cutouts from CAMELS simulations:
 
@@ -407,7 +428,61 @@ BIND_OUTPUT_ROOT/
             └── power_spec_star.png
 ```
 
-### 5.6 Programmatic BIND Usage
+### 5.6 User-Friendly BIND Prediction (bind_predict.py)
+
+For users who want to apply BIND to their own DMO simulations, we provide a simplified command-line interface:
+
+```bash
+# Basic usage - specify your simulation, halo catalog, and output directory
+python bind_predict.py \
+    --dmo_path /path/to/your/snap_090.hdf5 \
+    --halo_catalog /path/to/your/fof_halos.hdf5 \
+    --output_dir ./my_bind_output
+
+# With custom parameters
+python bind_predict.py \
+    --dmo_path /path/to/snap_090.hdf5 \
+    --halo_catalog /path/to/halos.hdf5 \
+    --output_dir ./output \
+    --mass_threshold 5e12 \
+    --n_realizations 5 \
+    --device cuda
+
+# Using Rockstar halo catalog format
+python bind_predict.py \
+    --dmo_path /path/to/snap_090.hdf5 \
+    --halo_catalog /path/to/halos_0.0.ascii \
+    --halo_format rockstar \
+    --output_dir ./output
+
+# Using CSV halo catalog (columns: x, y, z, mass)
+python bind_predict.py \
+    --dmo_path /path/to/snap_090.hdf5 \
+    --halo_catalog /path/to/halos.csv \
+    --halo_format csv \
+    --output_dir ./output
+```
+
+**Supported Halo Catalog Formats:**
+
+| Format | Extension | Description |
+|--------|-----------|-------------|
+| SubFind/FOF | `.hdf5`, `.h5` | AREPO/Gadget format with `Group/` or `Subhalo/` groups |
+| Rockstar | `.ascii`, `.list`, `.txt` | ASCII format with standard Rockstar columns |
+| CSV | `.csv` | Generic CSV with columns: `x, y, z, mass` (optionally `radius`) |
+
+**Output:**
+
+For each halo and realization, `bind_predict.py` generates:
+- `halo_{idx}_real_{n}.npz` containing:
+  - `dm_hydro`: Dark matter density from hydro simulation approximation
+  - `gas`: Gas density field
+  - `stars`: Stellar density field
+  - `condition`: Input DMO condition map
+  - `halo_position`, `halo_mass`: Halo metadata
+- `generation_summary.csv`: Summary table of all generated samples
+
+### 5.7 Programmatic BIND Usage
 
 ```python
 from bind.bind import BIND
@@ -478,17 +553,27 @@ python run_tests.py --validate
 | `test_stellar_stats_content` | Stellar stats contain correct keys |
 | `test_train_data_root_override` | Environment variable override works |
 
-#### `tests/test_vdm.py` - VDM Model Tests (7 tests)
+#### `tests/test_data_generation.py` - Data Generation Consistency Tests (15 tests)
 
 | Test | Description |
 |------|-------------|
-| `test_unet_forward_shape` | UNet output shape matches input |
-| `test_unet_deterministic` | UNet is deterministic in eval mode |
-| `test_unet_with_large_scale` | UNet handles large-scale conditioning |
-| `test_variance_preserving_map` | Diffusion forward process |
-| `test_sample_times` | Time sampling in [0, 1] |
-| `test_snr_computation` | SNR is positive for valid gamma |
-| `test_fixed_linear_schedule` | Noise schedule interpolation |
+| `test_scale_sizes_match` | Training and BIND use same physical scales |
+| `test_target_resolution_match` | Consistent 128x128 resolution |
+| `test_voxel_resolution_calculation` | Grid resolution math is correct |
+| `test_normalization_stats_exist` | Normalization files exist |
+| `test_normalization_transform` | log10(x+1) transform is correct |
+| `test_zscore_normalization` | Z-score normalization works |
+| `test_normalization_roundtrip` | Normalize/denormalize is reversible |
+| `test_minimum_image_convention` | Periodic boundary handling |
+| `test_cic_mass_conservation` | CIC interpolation conserves mass |
+
+#### `tests/test_vdm.py` - UNet Architecture Tests (30 tests)
+
+Tests cover UNet forward pass, conditioning, attention mechanisms, Fourier features, and cross-attention.
+
+#### `tests/test_vdm_model.py` - VDM Model Tests (56 tests)
+
+Comprehensive tests for noise schedules, diffusion loss, focal loss, per-channel noise, and Lightning module integration.
 
 #### `tests/test_bind.py` - BIND Pipeline Tests (7 tests)
 
@@ -517,15 +602,27 @@ python run_tests.py --validate
 ```
 Module                    Coverage
 ---------------------------------------
-config.py                 ~95%
-vdm/networks_clean.py     ~60%
-vdm/vdm_model_clean.py    ~50%
-vdm/utils.py              ~40%
+config.py                 ~83%
+vdm/networks_clean.py     ~75%
+vdm/vdm_model_clean.py    ~86%
+vdm/utils.py              ~77%
 bind/workflow_utils.py    ~45%
 bind/bind.py              ~30%
 ---------------------------------------
-Total: 28 tests, all passing
+Total: 142 tests, all passing
 ```
+
+### Test Categories
+
+| Test File | Tests | Description |
+|-----------|-------|-------------|
+| `test_config.py` | 10 | Path configuration, environment variables |
+| `test_vdm.py` | 30 | UNet architecture, forward pass, attention |
+| `test_vdm_model.py` | 56 | VDM loss functions, noise schedules, Lightning module |
+| `test_bind.py` | 13 | Normalization, ConfigLoader, halo pasting |
+| `test_data_generation.py` | 15 | Multi-scale extraction, CIC interpolation, consistency |
+| `test_integration.py` | 5 | End-to-end pipeline tests |
+| `test_utils.py` | 13 | Utility functions |
 
 ---
 
