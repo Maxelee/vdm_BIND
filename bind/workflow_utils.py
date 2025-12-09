@@ -1,58 +1,13 @@
+"""
+Workflow utilities for BIND inference.
+
+Provides ConfigLoader, ModelManager, and sampling functions.
+"""
 from lightning.pytorch import Trainer, seed_everything
 import sys
 import os
 
-# Ensure we prefer the external `vdm` package located in the training repo
-# at /mnt/home/mlee1/variational-diffusion-cdm over any local `vdm`/`networks.py`
-VDM_PATH = "/mnt/home/mlee1/variational-diffusion-cdm"
-if os.path.isdir(VDM_PATH) and VDM_PATH not in sys.path:
-    # Prepend so it takes precedence over workspace packages
-    sys.path.insert(0, VDM_PATH)
-# If a different `vdm` is already imported (e.g., from site-packages), ensure we
-# load the `vdm` package from VDM_PATH instead so the training repo implementation
-# is used. This replaces sys.modules entries for `vdm` and key submodules.
-try:
-    # Import normally first; if it's already the correct one nothing else needed
-    import vdm
-    vdm_path_loaded = getattr(vdm, '__file__', '')
-except Exception:
-    vdm = None
-    vdm_path_loaded = ''
-
-if os.path.isdir(VDM_PATH):
-    # Path to the package directory inside the training repo
-    candidate_pkg_init = os.path.join(VDM_PATH, 'vdm', '__init__.py')
-    if os.path.exists(candidate_pkg_init):
-        # If an existing vdm is imported and it's not from the training repo, reload
-        if not vdm_path_loaded.startswith(os.path.join(VDM_PATH, 'vdm')):
-            import importlib.util
-            import types
-
-            def _load_module_from_path(module_name, file_path):
-                spec = importlib.util.spec_from_file_location(module_name, file_path)
-                mod = importlib.util.module_from_spec(spec)
-                # Execute module in its namespace
-                spec.loader.exec_module(mod)
-                return mod
-
-            # Load the top-level vdm package
-            vdm_mod = _load_module_from_path('vdm', candidate_pkg_init)
-            # Insert into sys.modules so subsequent imports use this one
-            sys.modules['vdm'] = vdm_mod
-
-            # Load common submodules we rely on so imports like `from vdm import networks` work
-            submods = ['networks', 'vdm_model', 'astro_dataset', 'utils', 'constants']
-            for sm in submods:
-                sm_path = os.path.join(VDM_PATH, 'vdm', f'{sm}.py')
-                if os.path.exists(sm_path):
-                    mod = _load_module_from_path(f'vdm.{sm}', sm_path)
-                    sys.modules[f'vdm.{sm}'] = mod
-
-            # Rebind vdm variable for local use
-            import importlib
-            vdm = importlib.import_module('vdm')
-
-# Now import the pieces we need from the (forced) vdm package
+# Import vdm package - assumes vdm_BIND is installed or in path
 from vdm.astro_dataset import get_astro_data
 from vdm import vdm_model_clean as vdm_module, networks_clean as networks
 from vdm.utils import draw_figure
@@ -66,12 +21,16 @@ import pandas as pd
 import numpy as np
 import os
 
-def load_normalization_stats(base_path='/mnt/home/mlee1/variational-diffusion-cdm'):
+# Get project root (directory containing this file's parent)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def load_normalization_stats(base_path=None):
     """
     Load normalization statistics from .npz files.
     
     Args:
-        base_path: Directory containing the normalization .npz files
+        base_path: Directory containing the normalization .npz files.
+                   Defaults to project root.
     
     Returns:
         dict with keys:
@@ -79,6 +38,9 @@ def load_normalization_stats(base_path='/mnt/home/mlee1/variational-diffusion-cd
             - gas_mag_mean, gas_mag_std
             - star_mag_mean, star_mag_std
     """
+    if base_path is None:
+        base_path = _PROJECT_ROOT
+    
     stats = {}
     
     # Load DM stats

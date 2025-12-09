@@ -739,7 +739,7 @@ def main():
 
     # Model parameters
     parser.add_argument('--config_path', type=str, 
-                       default='/mnt/home/mlee1/variational-diffusion-cdm/configs/dmo2hydro_1024_2.ini',
+                       default='/mnt/home/mlee1/vdm_BIND/configs/dmo2hydro_1024_2.ini',
                        help='Path to model config file')
     parser.add_argument('--model_name', type=str, default='standard',
                        help='Model name for output directory (default: standard)')

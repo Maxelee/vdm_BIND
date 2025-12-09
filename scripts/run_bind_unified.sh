@@ -75,7 +75,7 @@ source /mnt/home/mlee1/venvs/torch3/bin/activate
 # Suite and Model Configuration
 SUITE=${SUITE:-"sb35"}  # cv, sb35, 1p, or all (DEFAULT: cv)
 MODEL_NAME=${MODEL_NAME:-"clean_vdm_aggressive_stellar"}  # Name for output directories and plots
-CONFIG_PATH=${CONFIG_PATH:-"/mnt/home/mlee1/variational-diffusion-cdm/configs/clean_vdm_aggressive_stellar.ini"}
+CONFIG_PATH=${CONFIG_PATH:-"/mnt/home/mlee1/vdm_BIND/configs/clean_vdm_aggressive_stellar.ini"}
 
 # Output Configuration
 BASE_OUTPATH=${BASE_OUTPATH:-"/mnt/home/mlee1/ceph/BIND2d_new"}

@@ -22,4 +22,4 @@ unset SLURM_NTASKS_PER_NODE
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # PyTorch Lightning DDP: ONE process, it spawns GPU workers internally
-srun python train_triple_model.py --config /mnt/home/mlee1/variational-diffusion-cdm/configs/clean_vdm_triple.ini
+srun python train_triple_model.py --config configs/clean_vdm_triple.ini

@@ -85,9 +85,9 @@ class BIND:
         self.paste_gridsize = self.gridsize  # No resizing, use original gridsize
         
         # Load normalization stats from .npz files (matches training data)
-        # These files are in the VDM training repository
-        from workflow_utils import load_normalization_stats
-        norm_stats = load_normalization_stats(base_path='/mnt/home/mlee1/variational-diffusion-cdm')
+        # These files are in the project root
+        from .workflow_utils import load_normalization_stats
+        norm_stats = load_normalization_stats()  # Uses project root by default
         
         # Set normalization parameters
         # Input (DM condition): use DM stats
