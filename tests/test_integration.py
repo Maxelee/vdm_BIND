@@ -65,8 +65,8 @@ class TestVDMTrainingPipeline:
         times = vdm.sample_times(target.shape[0], target.device)
         z_t, gamma_t = vdm.variance_preserving_map(target, times)
         
-        # Score model prediction
-        noise_pred = score_model(z_t, gamma_t, condition)
+        # Score model prediction - squeeze gamma from (B,1,1,1) to (B,)
+        noise_pred = score_model(z_t, gamma_t.squeeze(), condition)
         
         assert noise_pred.shape == target.shape
     
@@ -113,10 +113,13 @@ class TestVDMTrainingPipeline:
 class TestSamplingPipeline:
     """Integration tests for sampling/inference."""
     
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Sampling test requires CUDA")
     def test_draw_samples_shape(self):
         """Test that sampling produces correct output shape."""
         from vdm.networks_clean import UNetVDM
         from vdm.vdm_model_clean import LightCleanVDM
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
         # Create model
         score_model = UNetVDM(
@@ -131,7 +134,7 @@ class TestSamplingPipeline:
             use_param_conditioning=False,
             conditioning_channels=1,
             large_scale_channels=0,
-        )
+        ).to(device)
         
         light_vdm = LightCleanVDM(
             score_model=score_model,
@@ -140,12 +143,12 @@ class TestSamplingPipeline:
             gamma_max=10.0,
             image_shape=(3, 64, 64),
             noise_schedule="fixed_linear",
-        )
+        ).to(device)
         light_vdm.eval()
         
-        # Create conditioning
+        # Create conditioning on same device
         batch_size = 2
-        condition = torch.randn(batch_size, 1, 64, 64)
+        condition = torch.randn(batch_size, 1, 64, 64).to(device)
         
         # Draw samples with very few steps for speed
         with torch.no_grad():

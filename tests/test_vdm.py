@@ -36,7 +36,7 @@ class TestUNetVDM:
         """UNet should output same shape as input."""
         batch_size = 2
         x = torch.randn(batch_size, 3, 64, 64)
-        gamma = torch.randn(batch_size, 1, 1, 1)
+        gamma = torch.randn(batch_size)  # Network expects (B,) shape
         cond = torch.randn(batch_size, 1, 64, 64)
         
         out = small_unet(x, gamma, cond)
@@ -46,7 +46,7 @@ class TestUNetVDM:
         """UNet should be deterministic (no dropout in eval mode)."""
         small_unet.eval()
         x = torch.randn(1, 3, 64, 64)
-        gamma = torch.randn(1, 1, 1, 1)
+        gamma = torch.randn(1)  # Network expects (B,) shape
         cond = torch.randn(1, 1, 64, 64)
         
         with torch.no_grad():
@@ -75,7 +75,7 @@ class TestUNetVDM:
         
         batch_size = 2
         x = torch.randn(batch_size, 3, 64, 64)
-        gamma = torch.randn(batch_size, 1, 1, 1)
+        gamma = torch.randn(batch_size)  # Network expects (B,) shape
         # Conditioning: 1 base + 3 large-scale = 4 total channels
         cond = torch.randn(batch_size, 4, 64, 64)
         
@@ -149,14 +149,14 @@ class TestNoiseSchedules:
         
         schedule = FixedLinearSchedule(gamma_min=-10.0, gamma_max=10.0)
         
-        # At t=0, gamma should be gamma_max (high SNR)
+        # At t=0, gamma should be gamma_min (start of diffusion)
         gamma_0 = schedule(torch.tensor([0.0]))
-        assert torch.isclose(gamma_0, torch.tensor([10.0]), atol=0.1)
+        assert torch.isclose(gamma_0, torch.tensor([-10.0]), atol=0.1)
         
-        # At t=1, gamma should be gamma_min (low SNR)
+        # At t=1, gamma should be gamma_max (end of diffusion)
         gamma_1 = schedule(torch.tensor([1.0]))
-        assert torch.isclose(gamma_1, torch.tensor([-10.0]), atol=0.1)
+        assert torch.isclose(gamma_1, torch.tensor([10.0]), atol=0.1)
         
-        # At t=0.5, gamma should be near 0
+        # At t=0.5, gamma should be near 0 (midpoint)
         gamma_half = schedule(torch.tensor([0.5]))
         assert torch.isclose(gamma_half, torch.tensor([0.0]), atol=0.5)

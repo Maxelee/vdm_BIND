@@ -33,6 +33,9 @@ PROJECT_ROOT = os.environ.get('VDM_BIND_ROOT', str(_THIS_FILE.parent))
 # Project data directory (normalization stats, quantile transformers)
 DATA_DIR = os.environ.get('VDM_BIND_DATA', os.path.join(PROJECT_ROOT, 'data'))
 
+# Alias for backward compatibility
+NORMALIZATION_STATS_DIR = DATA_DIR
+
 # Normalization statistics files
 DM_NORM_STATS = os.path.join(DATA_DIR, 'dark_matter_normalization_stats.npz')
 GAS_NORM_STATS = os.path.join(DATA_DIR, 'gas_normalization_stats.npz')
