@@ -1,0 +1,1050 @@
+from lightning.pytorch import Trainer, seed_everything
+import sys
+import os
+
+# Ensure we prefer the external `vdm` package located in the training repo
+# at /mnt/home/mlee1/variational-diffusion-cdm over any local `vdm`/`networks.py`
+VDM_PATH = "/mnt/home/mlee1/variational-diffusion-cdm"
+if os.path.isdir(VDM_PATH) and VDM_PATH not in sys.path:
+    # Prepend so it takes precedence over workspace packages
+    sys.path.insert(0, VDM_PATH)
+# If a different `vdm` is already imported (e.g., from site-packages), ensure we
+# load the `vdm` package from VDM_PATH instead so the training repo implementation
+# is used. This replaces sys.modules entries for `vdm` and key submodules.
+try:
+    # Import normally first; if it's already the correct one nothing else needed
+    import vdm
+    vdm_path_loaded = getattr(vdm, '__file__', '')
+except Exception:
+    vdm = None
+    vdm_path_loaded = ''
+
+if os.path.isdir(VDM_PATH):
+    # Path to the package directory inside the training repo
+    candidate_pkg_init = os.path.join(VDM_PATH, 'vdm', '__init__.py')
+    if os.path.exists(candidate_pkg_init):
+        # If an existing vdm is imported and it's not from the training repo, reload
+        if not vdm_path_loaded.startswith(os.path.join(VDM_PATH, 'vdm')):
+            import importlib.util
+            import types
+
+            def _load_module_from_path(module_name, file_path):
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
+                mod = importlib.util.module_from_spec(spec)
+                # Execute module in its namespace
+                spec.loader.exec_module(mod)
+                return mod
+
+            # Load the top-level vdm package
+            vdm_mod = _load_module_from_path('vdm', candidate_pkg_init)
+            # Insert into sys.modules so subsequent imports use this one
+            sys.modules['vdm'] = vdm_mod
+
+            # Load common submodules we rely on so imports like `from vdm import networks` work
+            submods = ['networks', 'vdm_model', 'astro_dataset', 'utils', 'constants']
+            for sm in submods:
+                sm_path = os.path.join(VDM_PATH, 'vdm', f'{sm}.py')
+                if os.path.exists(sm_path):
+                    mod = _load_module_from_path(f'vdm.{sm}', sm_path)
+                    sys.modules[f'vdm.{sm}'] = mod
+
+            # Rebind vdm variable for local use
+            import importlib
+            vdm = importlib.import_module('vdm')
+
+# Now import the pieces we need from the (forced) vdm package
+from vdm.astro_dataset import get_astro_data
+from vdm import vdm_model_clean as vdm_module, networks_clean as networks
+from vdm.utils import draw_figure
+import torch
+import re
+import glob
+import configparser
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import pandas as pd
+import numpy as np
+import os
+
+def load_normalization_stats(base_path='/mnt/home/mlee1/variational-diffusion-cdm'):
+    """
+    Load normalization statistics from .npz files.
+    
+    Args:
+        base_path: Directory containing the normalization .npz files
+    
+    Returns:
+        dict with keys:
+            - dm_mag_mean, dm_mag_std
+            - gas_mag_mean, gas_mag_std
+            - star_mag_mean, star_mag_std
+    """
+    stats = {}
+    
+    # Load DM stats
+    dm_path = os.path.join(base_path, 'dark_matter_normalization_stats.npz')
+    if os.path.exists(dm_path):
+        dm_stats = np.load(dm_path)
+        stats['dm_mag_mean'] = float(dm_stats['dm_mag_mean'])
+        stats['dm_mag_std'] = float(dm_stats['dm_mag_std'])
+        print(f"✓ Loaded DM normalization: mean={stats['dm_mag_mean']:.6f}, std={stats['dm_mag_std']:.6f}")
+    else:
+        raise FileNotFoundError(f"DM normalization file not found: {dm_path}")
+    
+    # Load Gas stats
+    gas_path = os.path.join(base_path, 'gas_normalization_stats.npz')
+    if os.path.exists(gas_path):
+        gas_stats = np.load(gas_path)
+        stats['gas_mag_mean'] = float(gas_stats['gas_mag_mean'])
+        stats['gas_mag_std'] = float(gas_stats['gas_mag_std'])
+        print(f"✓ Loaded Gas normalization: mean={stats['gas_mag_mean']:.6f}, std={stats['gas_mag_std']:.6f}")
+    else:
+        raise FileNotFoundError(f"Gas normalization file not found: {gas_path}")
+    
+    # Load Stellar stats
+    star_path = os.path.join(base_path, 'stellar_normalization_stats.npz')
+    if os.path.exists(star_path):
+        star_stats = np.load(star_path)
+        stats['star_mag_mean'] = float(star_stats['star_mag_mean'])
+        stats['star_mag_std'] = float(star_stats['star_mag_std'])
+        print(f"✓ Loaded Stellar normalization: mean={stats['star_mag_mean']:.6f}, std={stats['star_mag_std']:.6f}")
+    else:
+        raise FileNotFoundError(f"Stellar normalization file not found: {star_path}")
+    
+    return stats
+
+
+class ConfigLoader:
+    """Load and manage configuration parameters from an INI file."""
+    
+    def __init__(self, config_path='config.ini', verbose=False, train_samples=False):
+        self.config_path = config_path
+        self.verbose = verbose
+        self.train_samples = train_samples
+        self._load_config()
+        self._state_initialization()
+
+    def _load_config(self):
+        """Load and parse configuration file, converting types automatically."""
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        params = config['TRAINING']
+
+        # Define expected types for parameters
+        int_params = {'seed', 'cropsize', 'batch_size', 'num_workers', 'embedding_dim',
+                      'norm_groups', 'n_blocks', 'n_attention_heads', 'version', 'ndim', 
+                      'conditioning_channels', 'large_scale_channels', 'field_weight_warmup_steps',
+                      'cross_attention_heads', 'cross_attention_chunk_size', 'cross_attn_cond_downsample_factor'}
+        float_params = {'gamma_min', 'gamma_max', 'learning_rate', 'mass_conservation_weight',
+                        'sparsity_threshold', 'sparse_loss_weight', 'focal_alpha', 'focal_gamma',
+                        'param_prediction_weight', 'cross_attention_dropout'}
+        bool_params = {'use_large_scale', 'use_fourier_features', 'fourier_legacy', 'legacy_fourier',
+                       'add_attention', 'use_progressive_field_weighting', 'use_mass_conservation',
+                       'use_sparsity_aware_loss', 'use_focal_loss', 'use_param_prediction', 
+                       'use_auxiliary_mask', 'antithetic_time_sampling', 'use_cross_attention',
+                       'use_chunked_cross_attention', 'downsample_cross_attn_cond'}
+        
+        # Assign attributes with correct types
+        for key, value in params.items():
+            if key in int_params:
+                setattr(self, key, int(value))
+            elif key in float_params:
+                setattr(self, key, float(value))
+            elif key in bool_params:
+                setattr(self, key, value.lower() in ('true', '1', 'yes'))
+            else:
+                setattr(self, key, value)
+        
+        # Handle backward compatibility: legacy_fourier -> fourier_legacy
+        if hasattr(self, 'legacy_fourier') and not hasattr(self, 'fourier_legacy'):
+            self.fourier_legacy = self.legacy_fourier
+            if self.verbose:
+                print(f"[ConfigLoader] Converted legacy_fourier={self.legacy_fourier} to fourier_legacy")
+        
+        # UPDATED: Handle data_noise specially (can be single float or tuple)
+        if 'data_noise' in params:
+            data_noise_str = params['data_noise']
+            if ',' in data_noise_str:
+                # Per-channel: parse as tuple of floats
+                self.data_noise = tuple(map(float, data_noise_str.split(',')))
+            else:
+                # Single value: parse as float
+                self.data_noise = float(data_noise_str)
+        else:
+            self.data_noise = 1e-3  # Default fallback
+        
+        # Set defaults for optional parameters that might not be in config
+        if not hasattr(self, 'lr_scheduler'):
+            self.lr_scheduler = 'cosine'
+        if not hasattr(self, 'lambdas'):
+            self.lambdas = '1.0,1.0,1.0'
+        if not hasattr(self, 'channel_weights'):
+            self.channel_weights = '1.0,1.0,1.0'
+        if not hasattr(self, 'focal_gamma'):
+            self.focal_gamma = 2.0
+        if not hasattr(self, 'param_prediction_weight'):
+            self.param_prediction_weight = 0.01
+        if not hasattr(self, 'use_focal_loss'):
+            self.use_focal_loss = False
+        if not hasattr(self, 'use_param_prediction'):
+            self.use_param_prediction = False
+        if not hasattr(self, 'antithetic_time_sampling'):
+            self.antithetic_time_sampling = True
+        if not hasattr(self, 'add_attention'):
+            self.add_attention = True
+        
+        # Set defaults for cross-attention parameters (networks_clean.py)
+        if not hasattr(self, 'use_cross_attention'):
+            self.use_cross_attention = False
+        if not hasattr(self, 'cross_attention_location'):
+            self.cross_attention_location = 'bottleneck'
+        if not hasattr(self, 'cross_attention_heads'):
+            self.cross_attention_heads = 8
+        if not hasattr(self, 'cross_attention_dropout'):
+            self.cross_attention_dropout = 0.1
+        if not hasattr(self, 'use_chunked_cross_attention'):
+            self.use_chunked_cross_attention = True
+        if not hasattr(self, 'cross_attention_chunk_size'):
+            self.cross_attention_chunk_size = 512
+        if not hasattr(self, 'downsample_cross_attn_cond'):
+            self.downsample_cross_attn_cond = False
+        if not hasattr(self, 'cross_attn_cond_downsample_factor'):
+            self.cross_attn_cond_downsample_factor = 2
+        
+        # Set defaults for optional parameters
+        if not hasattr(self, 'conditioning_channels') or self.conditioning_channels is None:
+            # Try to auto-detect from checkpoint if available
+            self.conditioning_channels = 1  # Default to 1 (base DM channel)
+            if self.verbose:
+                print(f"[ConfigLoader] conditioning_channels not in config or None, using default: {self.conditioning_channels}")
+        else:
+            if self.verbose:
+                print(f"[ConfigLoader] Found conditioning_channels in config: {self.conditioning_channels}")
+                print(f"[ConfigLoader] WARNING: This will be overridden by checkpoint auto-detection!")
+        
+        if not hasattr(self, 'large_scale_channels'):
+            # Default to 0 (no large-scale conditioning)
+            self.large_scale_channels = 0
+        
+        if not hasattr(self, 'use_large_scale'):
+            self.use_large_scale = None  # Will be auto-detected
+        
+        # Set defaults for Fourier features
+        if not hasattr(self, 'use_fourier_features'):
+            self.use_fourier_features = True  # Default to True for backward compatibility
+        
+        if not hasattr(self, 'fourier_legacy'):
+            # Auto-detect legacy mode based on checkpoint if available
+            self.fourier_legacy = None  # Will be auto-detected from checkpoint
+
+        # Load in the min/max params from the CSV file if it exists
+        if 'param_norm_path' in params and params['param_norm_path']:
+            self.use_param_conditioning = True
+            self.param_norm_path = params['param_norm_path']
+            if not glob.glob(self.param_norm_path):
+                raise FileNotFoundError(f"Conditional path not found: {self.param_norm_path}")
+            minmax_df = pd.read_csv(self.param_norm_path)
+            self.min = np.array(minmax_df['MinVal'].values)
+            self.max = np.array(minmax_df['MaxVal'].values)
+            self.Nparams = len(self.min)
+
+        # ✅ QUANTILE NORMALIZATION SUPPORT
+        # Load quantile_path if specified (for stellar channel normalization)
+        if 'quantile_path' in params and params['quantile_path']:
+            quantile_val = params['quantile_path'].strip()
+            if quantile_val.lower() not in ['none', '']:
+                self.quantile_path = quantile_val
+                if self.verbose:
+                    print(f"[ConfigLoader] 🌟 Quantile normalization enabled: {self.quantile_path}")
+            else:
+                self.quantile_path = None
+        else:
+            self.quantile_path = None
+
+        if getattr(self, 'verbose', False):
+            print(f"[ConfigLoader] Loaded config from: {self.config_path}")
+            print(f"[ConfigLoader] Parameters:")
+            for key in params:
+                print(f"  {key}: {getattr(self, key, None)}")
+
+    def _state_initialization(self):
+        """Find the best checkpoint based on validation files."""
+        self.tb_log_path = f"{self.tb_logs}/{self.model_name}/version_{self.version}/"
+        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch*')
+        if ckpts:
+            ckpts.sort(key=self._natural_sort_key)
+            self.best_ckpt = ckpts[-1]
+            self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
+        else:
+            self.best_ckpt = None
+
+        if getattr(self, 'verbose', False):
+            print(f"[ConfigLoader] TensorBoard log path: {self.tb_log_path}")
+            if self.best_ckpt:
+                print(f"[ConfigLoader] Found best checkpoint: {self.best_ckpt}")
+            else:
+                print("[ConfigLoader] No checkpoint found.")
+
+    @staticmethod
+    def _natural_sort_key(s):
+        """Generate key for natural sorting of strings containing numbers."""
+        return [
+            int(text) if text.isdigit() else text.lower()
+            for text in re.split(r'(\d+)', s)
+        ]
+
+class ModelManager:
+    @staticmethod
+    def initialize(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize the VDM model and optionally the dataloader.
+        
+        Args:
+            config: Configuration object
+            verbose: Print debug information
+            skip_data_loading: If True, skip dataset loading (faster for inference-only).
+                              If False, load the dataset (needed for training/validation).
+        """
+        if getattr(config, 'verbose', False) or verbose:
+            print("[ModelManager] Initializing model and dataloader...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Dataset: {config.dataset}")
+            print(f"[ModelManager] Data root: {config.data_root}")
+            print(f"[ModelManager] Batch size: {config.batch_size}")
+            if skip_data_loading:
+                print("[ModelManager] ⚠️  Skipping data loading (using pre-loaded samples)")
+            print(f"[ModelManager] BEFORE auto-detect: conditioning_channels = {getattr(config, 'conditioning_channels', 'NOT SET')}")
+            print(f"[ModelManager] BEFORE auto-detect: large_scale_channels = {getattr(config, 'large_scale_channels', 'NOT SET')}")
+            print(f"[ModelManager] BEFORE auto-detect: use_fourier_features = {getattr(config, 'use_fourier_features', 'NOT SET')}")
+            print(f"[ModelManager] BEFORE auto-detect: fourier_legacy = {getattr(config, 'fourier_legacy', 'NOT SET')}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        # Auto-detect Fourier settings and conditioning channels from checkpoint if checkpoint exists
+        if config.best_ckpt is not None:
+            try:
+                state_dict = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)["state_dict"]
+                
+                # Check for cross-attention (separate conditioning path)
+                cross_attn_keys = [k for k in state_dict.keys() if 'cross_attn' in k or 'mid_cross' in k]
+                has_cross_attention = len(cross_attn_keys) > 0
+                
+                if has_cross_attention and verbose:
+                    print(f"[ModelManager] Detected cross-attention model from checkpoint")
+                
+                # For cross-attention models, conditioning channels come from K/V projection, not conv_in
+                if has_cross_attention:
+                    # Find a cross-attention K or V projection to get conditioning channels
+                    kv_keys = [k for k in state_dict.keys() if ('to_k.weight' in k or 'to_v.weight' in k) and 'cross' in k]
+                    if kv_keys:
+                        kv_shape = state_dict[kv_keys[0]].shape
+                        # Shape is [embed_dim, cond_channels, 1, 1] for spatial cross-attention
+                        total_cond_channels = kv_shape[1]
+                        
+                        # Total conditioning = base DM (1) + large_scale (N)
+                        config.conditioning_channels = 1
+                        config.large_scale_channels = total_cond_channels - 1
+                        
+                        if verbose:
+                            print(f"[ModelManager] Cross-attention conditioning channel breakdown:")
+                            print(f"  K/V projection input: {total_cond_channels}")
+                            print(f"  = conditioning({config.conditioning_channels}) + large_scale({config.large_scale_channels})")
+                        
+                        # For cross-attention, conv_in only sees target channels (not conditioning)
+                        # So skip the normal auto-detection logic below
+                        has_cross_attention = True  # Mark for skipping normal logic
+                    else:
+                        if verbose:
+                            print(f"[ModelManager] Warning: Cross-attention detected but no K/V projections found")
+                        has_cross_attention = False
+                else:
+                    has_cross_attention = False
+                
+                # Check if fourier features are present in the checkpoint
+                has_legacy_fourier = 'model.score_model.fourier_features.freqs_exponent' in state_dict
+                has_new_fourier_halo = 'model.score_model.fourier_features_halo.frequencies' in state_dict
+                has_new_fourier_largescale = 'model.score_model.fourier_features_largescale.frequencies' in state_dict
+                
+                # Auto-detect fourier_legacy flag ONLY if not explicitly set in config
+                if config.fourier_legacy is None:
+                    if has_legacy_fourier:
+                        config.fourier_legacy = True
+                        if verbose:
+                            print(f"[ModelManager] Auto-detected LEGACY Fourier features from checkpoint")
+                    elif has_new_fourier_halo or has_new_fourier_largescale:
+                        config.fourier_legacy = False
+                        if verbose:
+                            print(f"[ModelManager] Auto-detected NEW multi-scale Fourier features from checkpoint")
+                    else:
+                        # No Fourier features in checkpoint
+                        config.fourier_legacy = False
+                        if hasattr(config, 'use_fourier_features'):
+                            config.use_fourier_features = False
+                        if verbose:
+                            print(f"[ModelManager] No Fourier features detected in checkpoint")
+                elif verbose:
+                    print(f"[ModelManager] Using fourier_legacy={config.fourier_legacy} from config file (not auto-detecting)")
+                
+                # Check conv_in weight shape to determine conditioning channels
+                # Skip this for cross-attention models (they use separate conditioning path)
+                if not has_cross_attention and 'model.score_model.conv_in.weight' in state_dict:
+                    conv_in_shape = state_dict['model.score_model.conv_in.weight'].shape
+                    # Shape is [out_channels, in_channels, k, k]
+                    # in_channels depends on Fourier mode:
+                    # No Fourier: input(3) + conditioning(1) + large_scale(N)
+                    # Legacy: input(3) + conditioning(1) + large_scale(N) + fourier_legacy(8)
+                    # New: input(3) + conditioning(1) + fourier_halo(8) + large_scale(N) + fourier_largescale(8*N)
+                    total_in_channels = conv_in_shape[1]
+                    
+                    input_channels = 3  # dm_hydro, gas, star
+                    
+                    # Determine which mode to use based on config settings
+                    # Priority: use_fourier_features (highest) > fourier_legacy > auto-detect
+                    
+                    # Check if model was trained WITHOUT Fourier features
+                    if not config.use_fourier_features:
+                        # No Fourier mode: input(3) + conditioning(1) + large_scale(N)
+                        total_conditioning = total_in_channels - input_channels
+                        config.conditioning_channels = 1
+                        config.large_scale_channels = total_conditioning - 1
+                        
+                        if verbose:
+                            print(f"[ModelManager] No Fourier features mode channel breakdown:")
+                            print(f"  Total conv_in: {total_in_channels}")
+                            print(f"  = input({input_channels}) + conditioning({config.conditioning_channels}) + large_scale({config.large_scale_channels})")
+                    elif config.fourier_legacy:
+                        # Legacy mode: base_channels + 8 Fourier features
+                        fourier_features = 8  # 4 freqs * 2 (sin/cos)
+                        total_conditioning = total_in_channels - input_channels - fourier_features
+                        
+                        # Split into base DM (1) + large-scale (N)
+                        config.conditioning_channels = 1
+                        config.large_scale_channels = total_conditioning - 1
+                        
+                        if verbose:
+                            print(f"[ModelManager] Legacy Fourier mode channel breakdown:")
+                            print(f"  Total conv_in: {total_in_channels}")
+                            print(f"  = input({input_channels}) + conditioning({config.conditioning_channels}) + large_scale({config.large_scale_channels}) + fourier_legacy({fourier_features})")
+                    else:
+                        # New mode: input(3) + conditioning(1) + fourier_halo(8) + large_scale(N) + fourier_largescale(8*N)
+                        # Fourier features: 8 per channel (4 freqs * 2 for sin/cos)
+                        fourier_per_channel = 8
+                        
+                        # Solve: total = 3 + 1 + 8 + N + 8*N = 3 + 1 + 8 + N(1 + 8) = 12 + 9*N
+                        # N = (total - 12) / 9
+                        if (total_in_channels - 12) % 9 == 0:
+                            config.large_scale_channels = (total_in_channels - 12) // 9
+                            config.conditioning_channels = 1
+                            
+                            if verbose:
+                                print(f"[ModelManager] New multi-scale Fourier mode channel breakdown:")
+                                print(f"  Total conv_in: {total_in_channels}")
+                                print(f"  = input({input_channels}) + conditioning({config.conditioning_channels}) + fourier_halo({fourier_per_channel}) + large_scale({config.large_scale_channels}) + fourier_largescale({fourier_per_channel * config.large_scale_channels})")
+                        else:
+                            # Channel count doesn't match - this is an error!
+                            # Don't override config settings
+                            if verbose:
+                                print(f"[ModelManager] ERROR: Channel count {total_in_channels} doesn't match expected formula for new Fourier mode")
+                                print(f"[ModelManager] Expected: 12 + 9*N where N = large_scale_channels")
+                                print(f"[ModelManager] This may indicate a config/checkpoint mismatch")
+                            
+                            # Try to calculate anyway assuming it might be no-Fourier or legacy
+                            # But DON'T override explicit config settings
+                            total_conditioning = total_in_channels - input_channels
+                            config.conditioning_channels = 1
+                            config.large_scale_channels = total_conditioning - 1
+                            
+                            if verbose:
+                                print(f"[ModelManager] Attempting fallback calculation:")
+                                print(f"  Total conv_in: {total_in_channels}")
+                                print(f"  = input({input_channels}) + conditioning({config.conditioning_channels}) + large_scale({config.large_scale_channels}) + ??? (unknown Fourier channels)")
+                                print(f"  WARNING: This may result in errors during model loading!")
+                    
+                    if verbose:
+                        print(f"[ModelManager] Final channel configuration:")
+                        print(f"  conditioning_channels: {config.conditioning_channels}")
+                        print(f"  large_scale_channels: {config.large_scale_channels}")
+                        print(f"  fourier_legacy: {config.fourier_legacy}")
+            except Exception as e:
+                if verbose:
+                    print(f"[ModelManager] Could not auto-detect from checkpoint: {e}")
+                # Fall through to manual calculation below
+                config.conditioning_channels = None
+        
+        # If checkpoint doesn't exist or auto-detection failed, calculate from large_scale_channels
+        if config.conditioning_channels is None:
+            config.conditioning_channels = 1  # Always 1 for base DM
+            if not hasattr(config, 'large_scale_channels'):
+                config.large_scale_channels = 0  # Default to no large-scale channels
+            if verbose:
+                print(f"[ModelManager] Using config values: conditioning_channels={config.conditioning_channels}, large_scale_channels={config.large_scale_channels}")
+        
+        if verbose:
+            print(f"[ModelManager] Setting up parameter conditioning...")
+            
+        if config.param_norm_path:
+            use_param_conditioning = True
+            param_norm_path = config.param_norm_path
+            minmax_df = pd.read_csv(param_norm_path)
+            min = np.array(minmax_df['MinVal'].values)
+            max = np.array(minmax_df['MaxVal'].values)
+            Nparams = len(min)
+           
+
+        if verbose:
+            if not skip_data_loading:
+                print(f"[ModelManager] Loading dataset (stage='test')...")
+            else:
+                print(f"[ModelManager] Skipping dataset loading (inference-only mode)")
+                
+        seed_everything(config.seed)
+        
+        # Skip data loading if flag is set (use pre-loaded samples)
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        if verbose:
+            print(f"[ModelManager] Creating UNetVDM model...")
+            print(f"[ModelManager] Model configuration:")
+            print(f"  - use_fourier_features: {config.use_fourier_features}")
+            print(f"  - fourier_legacy: {config.fourier_legacy}")
+            print(f"  - conditioning_channels: {config.conditioning_channels}")
+            print(f"  - large_scale_channels: {config.large_scale_channels}")
+            print(f"  - use_cross_attention: {config.use_cross_attention}")
+            if config.use_cross_attention:
+                print(f"    • location: {config.cross_attention_location}")
+                print(f"    • heads: {config.cross_attention_heads}")
+                print(f"    • dropout: {config.cross_attention_dropout}")
+                print(f"    • chunked: {config.use_chunked_cross_attention} (chunk_size={config.cross_attention_chunk_size})")
+            
+        score_model = networks.UNetVDM(
+            input_channels=3,
+            gamma_min=config.gamma_min,
+            gamma_max=config.gamma_max,
+            embedding_dim=config.embedding_dim,
+            norm_groups=config.norm_groups,
+            n_blocks=config.n_blocks,
+            add_attention=True,
+            n_attention_heads=config.n_attention_heads,
+            use_fourier_features=config.use_fourier_features,
+            legacy_fourier=config.fourier_legacy,
+            use_param_conditioning=use_param_conditioning,
+            param_min=min,
+            param_max=max,
+            conditioning_channels=config.conditioning_channels,  # Base DM channel (1)
+            large_scale_channels=config.large_scale_channels,  # Number of large-scale maps (N)
+            # Cross-attention parameters (networks_clean.py)
+            use_cross_attention=config.use_cross_attention,
+            cross_attention_location=config.cross_attention_location,
+            cross_attention_heads=config.cross_attention_heads,
+            cross_attention_dropout=config.cross_attention_dropout,
+            use_chunked_cross_attention=config.use_chunked_cross_attention,
+            cross_attention_chunk_size=config.cross_attention_chunk_size,
+            downsample_cross_attn_cond=config.downsample_cross_attn_cond,
+            cross_attn_cond_downsample_factor=config.cross_attn_cond_downsample_factor,
+        )
+        
+        if verbose:
+            print(f"[ModelManager] UNetVDM created. Wrapping in LightCleanVDM...")
+        
+        # Parse channel weights
+        channel_weights_str = getattr(config, 'channel_weights', '1.0,1.0,2.0')
+        channel_weights = tuple(map(float, channel_weights_str.split(',')))
+        
+        # Parse lambdas if it's a string
+        lambdas_value = getattr(config, 'lambdas', '1.0,1.0,1.0')
+        if isinstance(lambdas_value, str):
+            lambdas_value = lambdas_value  # Keep as string, LightCleanVDM will parse it
+        
+        # Image shape is always 2D for this model (channels, H, W)
+        # The training data is 2D: condition (128, 128), target (3, 128, 128)
+        image_shape = (3, config.cropsize, config.cropsize)
+        
+        vdm_hydro = vdm_module.LightCleanVDM(
+            score_model=score_model,
+            learning_rate=config.learning_rate,
+            lr_scheduler=getattr(config, 'lr_scheduler', 'cosine'),
+            gamma_min=config.gamma_min,
+            gamma_max=config.gamma_max,
+            image_shape=image_shape,
+            noise_schedule=config.noise_schedule,
+            data_noise=getattr(config, 'data_noise', 1e-5),
+            antithetic_time_sampling=getattr(config, 'antithetic_time_sampling', True),
+            lambdas=lambdas_value,
+            channel_weights=(1, 1, 1),
+            use_focal_loss=getattr(config, 'use_focal_loss', False),
+            focal_gamma=getattr(config, 'focal_gamma', 2.0),
+            use_param_prediction=getattr(config, 'use_param_prediction', False),
+            param_prediction_weight=getattr(config, 'param_prediction_weight', 0.01),
+        )
+        
+        if verbose:
+            print(f"[ModelManager] Loading checkpoint weights from disk...")
+            
+        state_dict = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)["state_dict"]
+        
+        if verbose:
+            print(f"[ModelManager] Checkpoint loaded. Loading state dict into model...")
+        
+        # Some legacy checkpoints may omit buffers/params that newer model code
+        # registers (for example, the legacy FourierFeatures registers a
+        # 'freqs_exponent' buffer). To remain backwards compatible, detect any
+        # keys that the freshly-initialized model expects but are missing from
+        # the checkpoint state_dict, and inject the model's current defaults
+        # for those keys into the loaded state dict before loading.
+        model_state = vdm_hydro.state_dict()
+        missing_keys = [k for k in model_state.keys() if k not in state_dict]
+        if missing_keys:
+            if verbose:
+                print(f"[ModelManager] Warning: checkpoint is missing {len(missing_keys)} keys. Injecting defaults from model: {missing_keys}")
+            for k in missing_keys:
+                # Only inject if model provides a value
+                state_dict[k] = model_state[k]
+
+        vdm_hydro.load_state_dict(state_dict)
+        vdm_hydro = vdm_hydro.eval()
+
+        if getattr(config, 'verbose', False) or verbose:
+            print("[ModelManager] Model and weights loaded successfully.")
+            print(f"[ModelManager] Model checkpoint: {config.best_ckpt}")
+            print(f"[ModelManager] Using {config.conditioning_channels} conditioning channel(s)")
+            print(f"[ModelManager] Using {config.large_scale_channels} large-scale channel(s)")
+            print(f"[ModelManager] Fourier features: {'LEGACY' if config.fourier_legacy else 'MULTI-SCALE' if config.use_fourier_features else 'DISABLED'}")
+
+        return hydro, vdm_hydro
+
+class DataHandler:
+    PROJ_DIRS = ['yz', 'xz', 'xy']
+
+    def __init__(self, base_path, sim_num, norms, data_type='test', verbose=False):
+        self.base_path = base_path
+        self.sim_num = sim_num
+        self.data_type = data_type
+        self.norms = norms
+        self.verbose = verbose
+        self._load_metadata()
+        self.target_means = np.array([norms[4], norms[2], norms[0]])
+        self.target_stds  = np.array([norms[5], norms[3], norms[1]])
+        self.input_mean = norms[6]
+        self.input_std = norms[7]
+        if self.verbose:
+            print(f"[DataHandler] Initialized for sim_num={sim_num}, data_type={data_type}")
+            print(f"[DataHandler] Loaded {self.Nhalos} halos from metadata.")
+
+    def _load_metadata(self):
+        self.metadata = pd.read_csv(f'{self.base_path}/metadata/sim_{self.sim_num}.csv')
+        self.halo_ids = self.metadata['nbody_index'].to_numpy().flatten()
+        self.Nhalos = len(self.halo_ids)
+        if getattr(self, 'verbose', False):
+            print(f"[DataHandler] Metadata loaded from {self.base_path}/metadata/sim_{self.sim_num}.csv")
+
+    def read_data(self, index):
+        """Read data with optional Omega_m, halo_mass, and ASN1 return"""
+        img_path = f'{self.base_path}/{self.data_type}_3d/sim_{self.sim_num}/halo_{index}_3d.npz'
+        with np.load(img_path) as data:
+            dm = data['dm'] + 1
+            dm_hydro = data['dm_hydro'] + 1
+            gas = data['gas'] + 1
+            star = data['star'] + 1
+            # Try to load Omega_m, halo_mass, and ASN1 if available
+            conditional_params =data['conditional_params']
+    
+        condition = dm.astype(np.float32)
+        target = np.stack([dm_hydro, gas, star]).astype(np.float32)
+        
+        result = [condition, target, conditional_params]
+        
+        return tuple(result)
+
+    def normalize_condition(self, condition):
+        condition_log = np.log10(condition + 1)
+        return (condition_log - self.input_mean) / self.input_std
+
+    def normalize_target(self, target):
+        target_log = np.log10(target + 1)
+        return (target_log - self.target_means[:, None, None, None]) / self.target_stds[:, None, None, None]
+
+    def unnormalize_target(self, target_norm):
+        """
+        Unnormalize target with Jensen's inequality correction for log-normal bias.
+        
+        The correction term (0.5 * std^2 * ln(10)) accounts for the bias introduced
+        when denormalizing from log-space: E[10^X] ≠ 10^E[X]
+        """
+        # Apply bias correction: add 0.5 * std^2 * ln(10) before exponentiation
+        correction = 0.5 * (self.target_stds ** 2) * np.log(10)
+        unnorm = target_norm * self.target_stds[:, None, None, None] + self.target_means[:, None, None, None] 
+        return 10 ** unnorm - 1
+
+    def batch_read_and_normalize(self, indices=None):
+        """Batch read with optional Omega_m, halo_mass, and ASN1"""
+        conds, tgts = [], []
+        conditional_params = []
+    
+        if indices is None:
+            indices = self.halo_ids
+            
+        for idx in indices:
+            read_results = self.read_data(idx)
+            
+            
+            cond, tgt, cond_params = read_results
+            
+            conds.append(self.normalize_condition(cond))
+            tgts.append(self.normalize_target(tgt))
+            conditional_params.append(cond_params)
+        
+        result = [np.stack(conds), np.stack(tgts), np.stack(conditional_params)]
+        
+        return tuple(result)
+
+# Enhanced sampling function with ASN1 support        
+def sample(vdm, conditions, batch_size=1, conditional_params=None,):
+    """
+    Process multiple conditions and return stacked samples with optional Omega_m, halo_mass, and ASN1 conditioning.
+    
+    Args:
+        vdm: Your VDM model
+        conditions: torch.Tensor, shape (N, C, H, W) or (N, C, H, W, D) 
+                   where C is the number of conditioning channels:
+                   - C=1: base DM condition only
+                   - C>1: base DM + (C-1) large-scale maps
+        batch_size: Number of samples per condition
+        conditional_params: Optional array of conditional parameters
+    
+    Returns:
+        torch.Tensor of shape (N, batch_size, 3, H, W) or (N, batch_size, 3, H, W, D)
+    """
+    # Ensure conditions has batch dimension
+    # conditions should already be (N, C, H, W) or (N, C, H, W, D)
+    vdm = vdm.to('cuda')
+    samples = []
+    
+    # Determine dimensionality
+    is_3d = len(conditions.shape) == 5  # (N, C, H, W, D)
+    
+    for i, cond in enumerate(tqdm(conditions, desc='Generating Samples')):
+        # cond is now (C, H, W) or (C, H, W, D) where C = 1 + num_large_scales
+        # Expand to batch_size: (batch_size, C, H, W) or (batch_size, C, H, W, D)
+        if is_3d:
+            cond_expanded = cond.unsqueeze(0).expand(batch_size, -1, -1, -1, -1).to('cuda')
+        else:
+            cond_expanded = cond.unsqueeze(0).expand(batch_size, -1, -1, -1).to('cuda')
+        
+        if conditional_params is not None:
+            param_row = torch.tensor(conditional_params[i], dtype=torch.float32, device='cuda')
+            param_expanded = param_row.unsqueeze(0).expand(batch_size, -1).to('cuda')  # (batch_size, Nparams)
+        else:
+            param_expanded = None
+        hydro_sample = vdm.draw_samples(
+            conditioning=cond_expanded,
+            batch_size=batch_size,
+            n_sampling_steps=getattr(vdm.hparams, 'n_sampling_steps', 250),
+            param_conditioning=param_expanded,
+        )  
+        
+        samples.append(hydro_sample.unsqueeze(0))  # Add N dimension
+    
+    return torch.cat(samples, dim=0).to("cpu")  # (N, batch_size, 3, H, W) or (N, batch_size, 3, H, W, D)
+
+
+# Keep all existing functions unchanged
+def get_density(mass_map, radius, nbins=20, nR=2, logbins=False, physical_bins=False):    
+    """
+    Calculate surface density in radial shells from the center of the image.
+    
+    Args:
+        mass_map: 2D array of mass/density values
+        radius: Physical radius scale (e.g., R200 in kpc)
+        nbins: Number of radial bins
+        nR: Maximum radius in units of the scale radius (ignored if physical_bins=True)
+        logbins: Whether to use logarithmic binning
+        physical_bins: If True, use physical units (kpc) for binning instead of normalized
+    
+    Returns:
+        bin_centers: Radial bin centers (units depend on physical_bins setting)
+        surface_density: Surface density in each radial shell [mass/area]
+    """
+    # Map parameters
+    map_size_mpc = 50/1024*128  # Total physical size of map in Mpc
+    pixel_size_mpc = map_size_mpc / mass_map.shape[0]  # Size per pixel in Mpc
+    pixel_size_kpc = pixel_size_mpc * 1000  # Convert to kpc
+    
+    # Calculate pixel distances from center
+    center = (mass_map.shape[0]/2 - 0.5, mass_map.shape[1]/2 - 0.5)  # Center in pixel coordinates
+    y, x = np.indices(mass_map.shape)
+    radii_pixels = np.sqrt((x - center[1])**2 + (y - center[0])**2)
+    radii_physical = radii_pixels * pixel_size_kpc  # Physical distance in kpc
+    radii_normalized = radii_physical / radius  # Normalized by scale radius
+    
+    # Radial binning - choose between physical and normalized
+    if physical_bins:
+        # Use physical units (kpc) as in your notebook
+        min_radius = pixel_size_kpc * 4  # Minimum radius (4 pixels)
+        max_radius = 2500  # 2.5 Mpc in kpc
+        
+        if not logbins:
+            bin_edges = np.linspace(min_radius, max_radius, nbins + 1, endpoint=True)
+            bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+        else:
+            bin_edges = np.logspace(np.log10(min_radius), np.log10(max_radius), nbins + 1, endpoint=True)
+            bin_centers = np.sqrt(bin_edges[:-1] * bin_edges[1:])  # Geometric mean
+        
+        # Use physical radii for masking
+        radii_for_binning = radii_physical
+        
+    else:
+        # Use normalized units (original behavior)
+        if not logbins:
+            bin_edges = np.linspace(0.01, nR, nbins + 1, endpoint=True)
+            bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+        else:
+            bin_edges = np.logspace(np.log10(0.01), np.log10(nR), nbins + 1, endpoint=True)
+            bin_centers = np.sqrt(bin_edges[:-1] * bin_edges[1:])  # Geometric mean
+        
+        # Use normalized radii for masking
+        radii_for_binning = radii_normalized
+    
+    # Calculate surface density Σ(R) in each annular shell
+    surface_density = []
+    for i in range(len(bin_edges) - 1):
+        # Create mask for this radial shell
+        mask = (radii_for_binning >= bin_edges[i]) & (radii_for_binning < bin_edges[i+1])
+        
+        # Total mass in this shell
+        total_mass = np.sum(mass_map[mask])
+        
+        # Area of the annular shell in kpc^2
+        if physical_bins:
+            # Bin edges are already in kpc
+            inner_radius_kpc = bin_edges[i]
+            outer_radius_kpc = bin_edges[i+1]
+        else:
+            # Convert normalized bin edges to kpc
+            inner_radius_kpc = bin_edges[i] * radius
+            outer_radius_kpc = bin_edges[i+1] * radius
+        
+        shell_area_kpc2 = np.pi * (outer_radius_kpc**2 - inner_radius_kpc**2)
+        
+        # Surface density = mass / area
+        if shell_area_kpc2 > 0:
+            surf_density = total_mass / shell_area_kpc2
+        else:
+            surf_density = 0.0
+            
+        surface_density.append(surf_density)
+    
+    return np.array(bin_centers), np.array(surface_density)
+def generate_density_profiles(hydro_sample, target, test_data, 
+                             density_types=('dm', 'gas', 'star', 'all'), 
+                             nbins=20, nR=2, logbins=True, physical_bins=False):
+    """
+    Generate density profiles for multiple fields.
+    
+    Args:
+        hydro_sample: Sampled data array (N, batch_size, 3, H, W)
+        target: True target data array (N, 3, H, W)
+        test_data: DataHandler instance with metadata
+        density_types: Tuple of fields to process ('dm', 'gas', 'star')
+        nbins, nR, logbins: Parameters for radial binning
+    
+    Returns:
+        (true_profiles, sampled_profiles) where each is a dictionary
+        with density types as keys and lists of profiles as values
+    """
+    # Map density types to channel indices
+    channel_map = {
+        'dm': 0,
+        'gas': 1,
+        'star': 2,
+        'all': [0,1,2],
+    }
+    
+    # Validate input types
+    invalid_types = [dt for dt in density_types if dt not in channel_map]
+    if invalid_types:
+        raise ValueError(f"Invalid density types: {invalid_types}. Valid options: {list(channel_map.keys())}")
+    
+    # Initialize profile storage
+    true_profiles = {dt: [] for dt in density_types}
+    sampled_profiles = {dt: [] for dt in density_types}
+
+    # Helper function for density calculation
+    def calculate_density(mass_map, radius):
+        return get_density(
+            mass_map=np.array(mass_map),
+            radius=radius,
+            nbins=nbins,
+            nR=nR,
+            logbins=logbins,
+            physical_bins=physical_bins
+        )[1]  # Return just the density values
+
+    # Main processing loop
+    for ii in range(len(hydro_sample)):
+        radius = test_data.metadata.loc[:, 'R_hydro'].iloc[ii]
+        
+        for dt in density_types:
+            channel = channel_map[dt]
+            
+            # Process true density
+            true_map = test_data.unnormalize_target(target[ii])[channel]
+            if dt =='all':
+                true_map = np.sum(true_map, axis=0)
+            true_profiles[dt].append(calculate_density(true_map, radius))
+            
+            # Process sampled densities
+            sample_maps = [test_data.unnormalize_target(hydro_sample[ii, n])[channel] 
+                          for n in range(len(hydro_sample[ii]))]
+            if dt =='all':
+                sample_maps = [np.sum(s, axis=0) for s in sample_maps]
+            sampled_profiles[dt].append([
+                calculate_density(smap, radius) for smap in sample_maps
+            ])
+    
+    return true_profiles, sampled_profiles
+def plot_combined_profiles(index, true_profiles, sampled_profiles, bin_centers):
+    """
+    Plot DM, gas, and star density profiles on the same panel.
+    
+    Args:
+        index: Halo index to plot
+        true_profiles: Dictionary of true density profiles
+        sampled_profiles: Dictionary of sampled density profiles
+        bin_centers: Radial bin centers from get_density()
+    """
+    plt.figure(figsize=(8, 6))
+    
+    # Define styling for each profile type
+    styles = {
+        'dm': {'color': 'blue', 'label': 'Dark Matter'},
+        'gas': {'color': 'green', 'label': 'Gas'},
+        'star': {'color': 'red', 'label': 'Stars'},
+        'all':{'color':'black', 'label':'Total'}
+    }
+    
+    for density_type in ['dm', 'gas', 'star', 'all']:
+        # Extract data
+        true = true_profiles[density_type][index]
+        samples = np.array(sampled_profiles[density_type][index])
+        
+        # Calculate statistics
+        mean = np.mean(samples, axis=0)
+        std = np.std(samples, axis=0)
+        
+        # Plotting
+        plt.plot(bin_centers, true, 
+                 color=styles[density_type]['color'], 
+                 linestyle='-', 
+                 label=f"True {styles[density_type]['label']}")
+        
+        plt.plot(bin_centers, mean,
+                 color=styles[density_type]['color'],
+                 linestyle='--',
+                 label=f"Sampled {styles[density_type]['label']}")
+        
+        plt.fill_between(bin_centers, 
+                         mean - std, 
+                         mean + std,
+                         color=styles[density_type]['color'], 
+                         alpha=0.2)
+
+    # Formatting
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Radius [R/R200]', fontsize=12)
+    plt.ylabel(r'Density [M$_\odot$/kpc$^3$]', fontsize=12)
+    plt.title(f'Density Profiles Comparison - Halo {index}', fontsize=14)
+    plt.legend(fontsize=10, frameon=False)
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.show()
+
+def plot_density_and_images(index, true_profiles, sampled_profiles, bin_centers, hydro_sample, target):
+    """
+    Creates a comprehensive visualization with density profiles on top and image comparisons below.
+    
+    Args:
+        index: Index of the halo to visualize
+        true_profiles: Dictionary of true density profiles by type
+        sampled_profiles: Dictionary of sampled density profiles by type
+        bin_centers: Radial bin centers
+        hydro_sample: Sampled hydro data, shape (N, batch_size, 3, H, W)
+        target: True target data, shape (N, 3, H, W)
+    """
+    fig = plt.figure(figsize=(15, 15))
+    
+    # Create grid for density plot (top) and image panels (bottom)
+    gs = fig.add_gridspec(3, 3, height_ratios=[2, 1, 1], hspace=0.3)
+    
+    # Density plot on top spanning all columns
+    ax_density = fig.add_subplot(gs[0, :])
+    
+    styles = {
+        'dm': {'color': 'blue', 'label': 'Dark Matter'},
+        'gas': {'color': 'green', 'label': 'Gas'},
+        'star': {'color': 'red', 'label': 'Stars'},
+        'all':{'color':'black', 'label':'Total'}
+    }
+    
+    for density_type in ['dm', 'gas', 'star', 'all']:
+        true = true_profiles[density_type][index]
+        samples = np.array(sampled_profiles[density_type][index])
+        mean = np.mean(samples, axis=0)
+        std = np.std(samples, axis=0)
+        
+        ax_density.plot(bin_centers, true, 
+                        color=styles[density_type]['color'], 
+                        linestyle='-', 
+                        label=f"True {styles[density_type]['label']}")
+        ax_density.plot(bin_centers, mean,
+                        color=styles[density_type]['color'],
+                        linestyle='--',
+                        label=f"Sampled {styles[density_type]['label']}")
+        ax_density.fill_between(bin_centers, 
+                                mean - std, 
+                                mean + std,
+                                color=styles[density_type]['color'], 
+                                alpha=0.2)
+
+    # ax_density.set_xscale('log')
+    ax_density.set_yscale('log')
+    ax_density.set_xlabel('Radius [R/R200]', fontsize=12)
+    ax_density.set_ylabel(r'Density [M$_\odot$/kpc$^3$]', fontsize=12)
+    ax_density.set_title(f'Density Profiles Comparison - Halo {index}', fontsize=14)
+    ax_density.legend(fontsize=10, frameon=False, ncols=3)
+    ax_density.grid(True, which='both', linestyle='--', alpha=0.5)
+
+    # Image panels below: 2 rows x 3 cols
+    channel_names = ['dm_hydro', 'gas', 'star']
+    for i in range(3):
+        # Top row: generated images
+        ax_gen = fig.add_subplot(gs[1, i])
+        mean_hydro = hydro_sample[index, :, i].mean(axis=0)
+        ax_gen.imshow(mean_hydro, cmap='viridis')
+        ax_gen.set_title(f'Generated {channel_names[i]}')
+        ax_gen.axis('off')
+
+        # Bottom row: true images
+        ax_true = fig.add_subplot(gs[2, i])
+        ax_true.imshow(target[index, i], cmap='viridis')
+        ax_true.set_title(f'True {channel_names[i]}')
+        ax_true.axis('off')
+
+    # plt.tight_layout()
+    return fig
+
