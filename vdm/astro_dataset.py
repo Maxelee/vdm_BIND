@@ -235,7 +235,7 @@ def astro_normalizations(dataset, stellar_stats_path=None, quantile_path=None):
     star_mag_std = None
     
     # Load DM normalization stats
-    dm_stats_path = '/mnt/home/mlee1/vdm_BIND/dark_matter_normalization_stats.npz'
+    dm_stats_path = '/mnt/home/mlee1/vdm_BIND/data/dark_matter_normalization_stats.npz'
     if os.path.exists(dm_stats_path):
         stats = np.load(dm_stats_path)
         dm_mag_mean = float(stats['dm_mag_mean'])
@@ -248,7 +248,7 @@ def astro_normalizations(dataset, stellar_stats_path=None, quantile_path=None):
         print(f"⚠️  Using fallback DM stats from constants: mean={dm_mag_mean:.6f}, std={dm_mag_std:.6f}")
     
     # Load Gas normalization stats
-    gas_stats_path = '/mnt/home/mlee1/vdm_BIND/gas_normalization_stats.npz'
+    gas_stats_path = '/mnt/home/mlee1/vdm_BIND/data/gas_normalization_stats.npz'
     if os.path.exists(gas_stats_path):
         stats = np.load(gas_stats_path)
         gas_mag_mean = float(stats['gas_mag_mean'])
@@ -311,7 +311,7 @@ def get_astro_data(
     resize=None,
     limit_train_samples=None,
     limit_val_samples=None,
-    stellar_stats_path='/mnt/home/mlee1/vdm_BIND/stellar_normalization_stats.npz',  # Z-score normalization
+    stellar_stats_path='/mnt/home/mlee1/vdm_BIND/data/stellar_normalization_stats.npz',  # Z-score normalization
     quantile_path=None,  # Quantile normalization (alternative to stellar_stats_path)
 ):
     """

@@ -389,7 +389,7 @@ if __name__ == "__main__":
         batch_size=batch_size,
         limit_train_samples=limit_train_samples,
         limit_val_samples=limit_val_samples,
-        stellar_stats_path='/mnt/home/mlee1/vdm_BIND/stellar_normalization_stats.npz',
+        stellar_stats_path='/mnt/home/mlee1/vdm_BIND/data/stellar_normalization_stats.npz',
         quantile_path=quantile_path
     )
     

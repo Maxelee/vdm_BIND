@@ -2,6 +2,7 @@
 Workflow utilities for BIND inference.
 
 Provides ConfigLoader, ModelManager, and sampling functions.
+Supports both 'clean' (3-channel) and 'triple' (3 separate 1-channel) model types.
 """
 from lightning.pytorch import Trainer, seed_everything
 import sys
@@ -10,6 +11,7 @@ import os
 # Import vdm package - assumes vdm_BIND is installed or in path
 from vdm.astro_dataset import get_astro_data
 from vdm import vdm_model_clean as vdm_module, networks_clean as networks
+from vdm import vdm_model_triple as vdm_triple_module
 from vdm.utils import draw_figure
 import torch
 import re
@@ -255,19 +257,288 @@ class ConfigLoader:
         ]
 
 class ModelManager:
+    """
+    Model manager supporting both 'clean' (3-channel) and 'triple' (3 separate 1-channel) models.
+    
+    Model Types:
+    - clean: Single 3-channel model (LightCleanVDM)
+    - triple: Three independent 1-channel models (LightTripleVDM)
+    
+    The model type is auto-detected from:
+    1. config.model_name containing 'triple'
+    2. Checkpoint state_dict having triple model structure (hydro_dm_model, gas_model, stars_model)
+    """
+    
+    @staticmethod
+    def detect_model_type(config, verbose=False):
+        """
+        Detect whether the model is 'clean' (3-channel) or 'triple' (3 separate models).
+        
+        Detection order:
+        1. Check config.model_name for 'triple'
+        2. Check checkpoint state_dict for triple model keys
+        3. Default to 'clean'
+        
+        Returns:
+            str: 'clean' or 'triple'
+        """
+        # Method 1: Check model_name in config
+        model_name = getattr(config, 'model_name', '')
+        if 'triple' in model_name.lower():
+            if verbose:
+                print(f"[ModelManager] Detected 'triple' model from model_name: {model_name}")
+            return 'triple'
+        
+        # Method 2: Check checkpoint state_dict structure
+        if config.best_ckpt and os.path.exists(config.best_ckpt):
+            try:
+                state_dict = torch.load(config.best_ckpt, map_location='cpu', weights_only=False).get('state_dict', {})
+                # Triple models have keys like 'model.hydro_dm_model.*', 'model.gas_model.*', 'model.stars_model.*'
+                triple_keys = [k for k in state_dict.keys() if any(x in k for x in ['hydro_dm_model', 'gas_model', 'stars_model'])]
+                if triple_keys:
+                    if verbose:
+                        print(f"[ModelManager] Detected 'triple' model from checkpoint structure ({len(triple_keys)} keys)")
+                    return 'triple'
+            except Exception as e:
+                if verbose:
+                    print(f"[ModelManager] Could not load checkpoint for model type detection: {e}")
+        
+        if verbose:
+            print(f"[ModelManager] Defaulting to 'clean' model type")
+        return 'clean'
+    
     @staticmethod
     def initialize(config, verbose=False, skip_data_loading=False):
         """
         Initialize the VDM model and optionally the dataloader.
+        
+        Supports both 'clean' (3-channel) and 'triple' (3 separate 1-channel) models.
+        Model type is auto-detected from config.model_name or checkpoint structure.
         
         Args:
             config: Configuration object
             verbose: Print debug information
             skip_data_loading: If True, skip dataset loading (faster for inference-only).
                               If False, load the dataset (needed for training/validation).
+                              
+        Returns:
+            tuple: (dataloader_or_None, model)
+        """
+        # Detect model type
+        model_type = ModelManager.detect_model_type(config, verbose=verbose)
+        
+        if model_type == 'triple':
+            return ModelManager._initialize_triple(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        else:
+            return ModelManager._initialize_clean(config, verbose=verbose, skip_data_loading=skip_data_loading)
+    
+    @staticmethod
+    def _initialize_triple(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize a triple VDM model (3 separate 1-channel models).
+        
+        The LightTripleVDM requires three UNet score models to be created before loading.
+        """
+        if verbose:
+            print("[ModelManager] Initializing TRIPLE model (3 separate 1-channel models)...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"Triple model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        checkpoint = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in hparams.items():
+                print(f"  {k}: {v}")
+        
+        # Auto-detect conditioning channels from checkpoint
+        state_dict = checkpoint.get('state_dict', {})
+        
+        # Find a conv_in key to detect channels (triple models have per-model UNets)
+        conv_in_keys = [k for k in state_dict.keys() if 'conv_in.weight' in k]
+        if conv_in_keys:
+            first_conv_in = state_dict[conv_in_keys[0]]
+            total_in_channels = first_conv_in.shape[1]
+            input_channels = 1  # Triple models use 1-channel input
+            
+            # Check for Fourier features - three modes:
+            # 1. Legacy: fourier_features.freqs (exponential frequencies, first channel only)
+            # 2. New multi-scale: fourier_features_halo.frequencies + fourier_features_largescale.frequencies
+            # 3. None: no Fourier features
+            legacy_keys = [k for k in state_dict.keys() if 'fourier_features.freqs' in k]
+            new_multiscale_keys = [k for k in state_dict.keys() if 'fourier_features_halo.frequencies' in k or 'fourier_features_largescale.frequencies' in k]
+            
+            if legacy_keys:
+                config.fourier_legacy = True
+                config.use_fourier_features = True
+            elif new_multiscale_keys:
+                config.fourier_legacy = False
+                config.use_fourier_features = True
+            else:
+                config.fourier_legacy = False
+                config.use_fourier_features = False
+            
+            if verbose:
+                print(f"[ModelManager] Triple model Fourier detection:")
+                print(f"  Legacy keys found: {len(legacy_keys)}")
+                print(f"  New multi-scale keys found: {len(new_multiscale_keys)}")
+                print(f"  fourier_legacy: {config.fourier_legacy}")
+                print(f"  use_fourier_features: {config.use_fourier_features}")
+            
+            # Calculate large_scale_channels based on conv_in shape and Fourier mode
+            if config.use_fourier_features:
+                if config.fourier_legacy:
+                    # Legacy: input + conditioning + 4*fourier + large_scale
+                    fourier_channels = 4
+                    base_channels = input_channels + 1 + fourier_channels  # 1=conditioning
+                    config.large_scale_channels = total_in_channels - base_channels
+                    config.conditioning_channels = 1
+                else:
+                    # New multi-scale: 
+                    # total = input + conditioning*(1+8) + large_scale*(1+8)
+                    # total = 1 + 1*9 + N*9 = 10 + 9*N
+                    # => N = (total - 10) / 9
+                    config.conditioning_channels = 1
+                    config.large_scale_channels = (total_in_channels - 10) // 9
+            else:
+                # No Fourier: input + conditioning + large_scale
+                config.conditioning_channels = 1
+                config.large_scale_channels = total_in_channels - input_channels - 1
+            
+            if verbose:
+                print(f"[ModelManager] Triple model channel configuration:")
+                print(f"  Total conv_in channels: {total_in_channels}")
+                print(f"  conditioning_channels: {config.conditioning_channels}")
+                print(f"  large_scale_channels: {config.large_scale_channels}")
+        
+        # Get UNet parameters from hparams
+        unet_params = {
+            'input_channels': 1,  # Triple models use 1-channel input
+            'conditioning_channels': config.conditioning_channels,
+            'large_scale_channels': config.large_scale_channels,
+            'gamma_min': hparams.get('gamma_min', config.gamma_min),
+            'gamma_max': hparams.get('gamma_max', config.gamma_max),
+            'embedding_dim': getattr(config, 'embedding_dim', 256),
+            'norm_groups': getattr(config, 'norm_groups', 32),
+            'n_blocks': getattr(config, 'n_blocks', 4),
+            'add_attention': getattr(config, 'add_attention', True),
+            'n_attention_heads': getattr(config, 'n_attention_heads', 8),
+            'use_fourier_features': config.use_fourier_features,
+            'legacy_fourier': config.fourier_legacy,
+            # Parameter conditioning - check config for param_norm_path
+            'use_param_conditioning': getattr(config, 'use_param_conditioning', False),
+            'param_min': getattr(config, 'min', None),
+            'param_max': getattr(config, 'max', None),
+            # Cross-attention (optional)
+            'use_cross_attention': getattr(config, 'use_cross_attention', False),
+            'cross_attention_location': getattr(config, 'cross_attention_location', 'bottleneck'),
+            'cross_attention_heads': getattr(config, 'cross_attention_heads', 8),
+            'cross_attention_dropout': getattr(config, 'cross_attention_dropout', 0.1),
+            'use_chunked_cross_attention': getattr(config, 'use_chunked_cross_attention', True),
+            'cross_attention_chunk_size': getattr(config, 'cross_attention_chunk_size', 512),
+            'downsample_cross_attn_cond': getattr(config, 'downsample_cross_attn_cond', False),
+            'cross_attn_cond_downsample_factor': getattr(config, 'cross_attn_cond_downsample_factor', 2),
+        }
+        
+        if verbose:
+            print(f"[ModelManager] Creating three UNet score models with params:")
+            for k, v in unet_params.items():
+                print(f"  {k}: {v}")
+        
+        # Create three separate UNet score models
+        hydro_dm_score_model = networks.UNetVDM(**unet_params)
+        gas_score_model = networks.UNetVDM(**unet_params)
+        stars_score_model = networks.UNetVDM(**unet_params)
+        
+        if verbose:
+            print(f"[ModelManager] Created three UNet models. Creating LightTripleVDM...")
+        
+        # Build LightTripleVDM constructor arguments from hparams
+        triple_params = {
+            'hydro_dm_score_model': hydro_dm_score_model,
+            'gas_score_model': gas_score_model,
+            'stars_score_model': stars_score_model,
+            'learning_rate': hparams.get('learning_rate', getattr(config, 'learning_rate', 3e-4)),
+            'lr_scheduler': hparams.get('lr_scheduler', getattr(config, 'lr_scheduler', 'cosine')),
+            'noise_schedule': hparams.get('noise_schedule', getattr(config, 'noise_schedule', 'fixed_linear')),
+            'gamma_min': hparams.get('gamma_min', config.gamma_min),
+            'gamma_max': hparams.get('gamma_max', config.gamma_max),
+            'image_shape': hparams.get('image_shape', (1, config.cropsize, config.cropsize)),
+            'data_noise': hparams.get('data_noise', getattr(config, 'data_noise', 1e-3)),
+            'antithetic_time_sampling': hparams.get('antithetic_time_sampling', getattr(config, 'antithetic_time_sampling', True)),
+            # Channel weights
+            'channel_weights': hparams.get('channel_weights', (1.0, 1.0, 1.0)),
+            # Focal loss settings (typically only for stars)
+            'use_focal_loss_hydro_dm': hparams.get('use_focal_loss_hydro_dm', False),
+            'use_focal_loss_gas': hparams.get('use_focal_loss_gas', False),
+            'use_focal_loss_stars': hparams.get('use_focal_loss_stars', getattr(config, 'use_focal_loss', False)),
+            'focal_gamma': hparams.get('focal_gamma', getattr(config, 'focal_gamma', 2.0)),
+            # Parameter prediction
+            'use_param_prediction': hparams.get('use_param_prediction', getattr(config, 'use_param_prediction', False)),
+            'param_prediction_weight': hparams.get('param_prediction_weight', getattr(config, 'param_prediction_weight', 0.01)),
+        }
+        
+        # Create the triple VDM model
+        vdm_model = vdm_triple_module.LightTripleVDM(**triple_params)
+        
+        if verbose:
+            print(f"[ModelManager] Loading state dict into LightTripleVDM...")
+        
+        # Load state dict (handle missing keys like we do for clean models)
+        model_state = vdm_model.state_dict()
+        missing_keys = [k for k in model_state.keys() if k not in state_dict]
+        if missing_keys and verbose:
+            print(f"[ModelManager] Warning: checkpoint is missing {len(missing_keys)} keys. Injecting defaults.")
+        for k in missing_keys:
+            state_dict[k] = model_state[k]
+        
+        vdm_model.load_state_dict(state_dict)
+        vdm_model = vdm_model.eval()
+        
+        if verbose:
+            print("[ModelManager] Triple model loaded successfully.")
+            print(f"[ModelManager] Model checkpoint: {config.best_ckpt}")
+            print(f"[ModelManager] Using {config.conditioning_channels} conditioning channel(s)")
+            print(f"[ModelManager] Using {config.large_scale_channels} large-scale channel(s)")
+            print(f"[ModelManager] Fourier features: {'LEGACY' if config.fourier_legacy else 'MULTI-SCALE' if config.use_fourier_features else 'DISABLED'}")
+        
+        # Load data if requested
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, vdm_model
+    
+    @staticmethod
+    def _initialize_clean(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize a clean VDM model (single 3-channel model).
+        
+        This is the original ModelManager.initialize() implementation.
         """
         if getattr(config, 'verbose', False) or verbose:
-            print("[ModelManager] Initializing model and dataloader...")
+            print("[ModelManager] Initializing CLEAN model (single 3-channel model)...")
             print(f"[ModelManager] Using seed: {config.seed}")
             print(f"[ModelManager] Dataset: {config.dataset}")
             print(f"[ModelManager] Data root: {config.data_root}")
