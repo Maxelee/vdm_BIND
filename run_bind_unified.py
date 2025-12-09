@@ -5,7 +5,7 @@ Hierarchical output structure to avoid redundant computation.
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from BIND import BIND
+from bind.bind import BIND
 import pandas as pd
 import h5py
 import os
@@ -13,84 +13,10 @@ import glob
 import MAS_library as MASL
 import Pk_library as PKL
 import argparse
-from analyses import run_all_analyses, plot_parameter_extremes_comparison
+from bind.analyses import run_all_analyses, plot_parameter_extremes_comparison
 
-
-def load_simulation(nbody_path, hydro_snapdir):
-    """Load both DMO and hydro simulations and return particle data."""
-    # Load nbody DM
-    dm_pos = []
-    dm_mass = []
-    with h5py.File(os.path.join(nbody_path, 'snap_090.hdf5'), 'r') as f:
-        dm_pos.append(f['PartType1/Coordinates'][:])
-        mass_table = f['Header'].attrs['MassTable']
-        dm_particle_mass = mass_table[1]
-        num_dm = len(f['PartType1/Coordinates'][:])
-        dm_mass.append(np.full(num_dm, dm_particle_mass))
-    dm_pos = np.concatenate(dm_pos)
-    dm_mass = np.concatenate(dm_mass)
-    dm_pos /= 1000.0
-    dm_mass *= 1e10
-    
-    # Load hydro
-    hydro_dm_pos = []
-    hydro_dm_mass = []
-    gas_pos = []
-    gas_mass = []
-    star_pos = []
-    star_mass = []
-    
-    for i in range(16):
-        fname = os.path.join(hydro_snapdir, f'snap_090.{i}.hdf5')
-        if not os.path.exists(fname):
-            continue
-        with h5py.File(fname, 'r') as f:
-            if 'PartType1/Coordinates' in f:
-                hydro_dm_pos.append(f['PartType1/Coordinates'][:])
-                if 'PartType1/Masses' in f:
-                    hydro_dm_mass.append(f['PartType1/Masses'][:])
-                else:
-                    mass_table = f['Header'].attrs['MassTable']
-                    dm_particle_mass = mass_table[1]
-                    num_dm = len(f['PartType1/Coordinates'][:])
-                    hydro_dm_mass.append(np.full(num_dm, dm_particle_mass))
-            if 'PartType0/Coordinates' in f:
-                gas_pos.append(f['PartType0/Coordinates'][:])
-                gas_mass.append(f['PartType0/Masses'][:])
-            if 'PartType4/Coordinates' in f:
-                star_pos.append(f['PartType4/Coordinates'][:])
-                star_mass.append(f['PartType4/Masses'][:])
-    
-    hydro_dm_pos = np.concatenate(hydro_dm_pos) if hydro_dm_pos else np.array([])
-    hydro_dm_mass = np.concatenate(hydro_dm_mass) if hydro_dm_mass else np.array([])
-    gas_pos = np.concatenate(gas_pos) if gas_pos else np.array([])
-    gas_mass = np.concatenate(gas_mass) if gas_mass else np.array([])
-    star_pos = np.concatenate(star_pos) if star_pos else np.array([])
-    star_mass = np.concatenate(star_mass) if star_mass else np.array([])
-    
-    # Convert units
-    if len(hydro_dm_pos) > 0:
-        hydro_dm_pos /= 1000.0
-        hydro_dm_mass *= 1e10
-    if len(gas_pos) > 0:
-        gas_pos /= 1000.0
-        gas_mass *= 1e10
-    if len(star_pos) > 0:
-        star_pos /= 1000.0
-        star_mass *= 1e10
-    
-    return dm_pos, dm_mass, hydro_dm_pos, hydro_dm_mass, gas_pos, gas_mass, star_pos, star_mass
-
-
-def project_2d(pos, mass, box_size, resolution, axis=2):
-    """Project 3D particle data onto 2D plane."""
-    axes = [0, 1, 2]
-    proj_axes = axes[:axis] + axes[axis+1:]
-    pos_ = np.ascontiguousarray(pos.astype(np.float32))[:, proj_axes]
-    mass_ = np.ascontiguousarray(mass.astype(np.float32))
-    field = np.zeros((resolution, resolution), dtype=np.float32)
-    MASL.MA(pos_, field, box_size, MAS='CIC', W=mass_, verbose=False)
-    return field
+# Import consolidated I/O utilities
+from vdm.io_utils import load_simulation, project_particles_2d as project_2d
 
 
 def extract_halo_cutout(field_2d, center, size_mpc, box_size, resolution, axis=2):

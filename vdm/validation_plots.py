@@ -8,8 +8,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from typing import Tuple, Optional
-import Pk_library as PKL
 
+# Import consolidated power spectrum functions
+try:
+    import Pk_library as PKL
+    from bind.power_spec import compute_power_spectrum_batch
+    HAS_PKL = True
+except ImportError:
+    HAS_PKL = False
 
 
 def unnormalize_field(field, mean, std):
@@ -20,6 +26,9 @@ def unnormalize_field(field, mean, std):
 def compute_binded_power(binded, boxsize=6.25):
     """
     Compute power spectrum from 2D fields.
+    
+    This is a wrapper around the consolidated compute_power_spectrum_batch
+    function in bind/power_spec.py for backward compatibility.
     
     Parameters:
     -----------
@@ -37,23 +46,10 @@ def compute_binded_power(binded, boxsize=6.25):
     Nmodes : array
         Number of modes in each bin
     """
-    binded = np.array(binded, dtype=np.float64)
-    delta_binded = binded / np.mean(binded, dtype=np.float64, axis=(1,2), keepdims=True)
-    delta_binded -= 1.0
-    delta_binded = delta_binded.astype(np.float32)
-    
-    # parameters
-    grid = 128  # the map will have grid^2 pixels
-    BoxSize = boxsize  # Mpc/h
-    MAS = 'NGP'  # MAS used to create the image
-    threads = 0  # number of openmp threads
-    
-    Pk2D_binded = [PKL.Pk_plane(delta_binded[i], BoxSize, MAS, threads) for i in range(binded.shape[0])]
-    k = Pk2D_binded[0].k
-    Nmodes = Pk2D_binded[0].Nmodes
-    Pk_binded = np.array([Pk2D_binded[i].Pk for i in range(binded.shape[0])])
-    
-    return k, Pk_binded, Nmodes
+    if HAS_PKL:
+        return compute_power_spectrum_batch(binded, BoxSize=boxsize, MAS='NGP', threads=0)
+    else:
+        raise ImportError("Pk_library (pylians3) required for power spectrum computation")
 
 
 def get_projected_surface_density(halo_mass, radius_pix, size=128, nbins=15):

@@ -1,12 +1,17 @@
 import numpy as np
 import h5py
 import os
+import sys
 from scipy.spatial.transform import Rotation
 import MAS_library as MASL
 import pandas as pd
 import argparse
 import random
 import mpi4py.MPI as MPI
+
+# Add parent directory to path for vdm imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vdm.io_utils import load_simulation, load_halos, project_particles_2d
 
 # Command-line arguments
 parser = argparse.ArgumentParser(description='Process IllustrisTNG simulations with MPI parallelization.')
@@ -118,82 +123,7 @@ def load_params(sim_id):
     """Load simulation parameters from CSV."""
     return metadata.iloc[sim_id].to_dict()
 
-def load_simulation(nbody_path, hydro_snapdir):
-    """Load particle data from nbody and hydro simulations."""
-    # Load nbody DM
-    dm_pos = []
-    dm_mass = []
-    with h5py.File(os.path.join(nbody_path, 'snap_090.hdf5'), 'r') as f:
-        dm_pos.append(f['PartType1/Coordinates'][:])
-        mass_table = f['Header'].attrs['MassTable']
-        dm_particle_mass = mass_table[1]
-        num_dm = len(f['PartType1/Coordinates'][:])
-        dm_mass.append(np.full(num_dm, dm_particle_mass))
-    dm_pos = np.concatenate(dm_pos)
-    dm_mass = np.concatenate(dm_mass)
-    dm_pos /= 1000.0
-    dm_mass *= 1e10
-
-    # Load hydro
-    hydro_dm_pos, hydro_dm_mass = [], []
-    gas_pos, gas_mass = [], []
-    star_pos, star_mass = [], []
-
-    for i in range(16):
-        fname = os.path.join(hydro_snapdir, f'snap_090.{i}.hdf5')
-        if not os.path.exists(fname):
-            continue
-        with h5py.File(fname, 'r') as f:
-            if 'PartType1/Coordinates' in f:
-                hydro_dm_pos.append(f['PartType1/Coordinates'][:])
-                if 'PartType1/Masses' in f:
-                    hydro_dm_mass.append(f['PartType1/Masses'][:])
-                else:
-                    mass_table = f['Header'].attrs['MassTable']
-                    dm_particle_mass = mass_table[1]
-                    num_dm = len(f['PartType1/Coordinates'][:])
-                    hydro_dm_mass.append(np.full(num_dm, dm_particle_mass))
-            if 'PartType0/Coordinates' in f:
-                gas_pos.append(f['PartType0/Coordinates'][:])
-                gas_mass.append(f['PartType0/Masses'][:])
-            if 'PartType4/Coordinates' in f:
-                star_pos.append(f['PartType4/Coordinates'][:])
-                star_mass.append(f['PartType4/Masses'][:])
-
-    hydro_dm_pos = np.concatenate(hydro_dm_pos) if hydro_dm_pos else np.array([])
-    hydro_dm_mass = np.concatenate(hydro_dm_mass) if hydro_dm_mass else np.array([])
-    gas_pos = np.concatenate(gas_pos) if gas_pos else np.array([])
-    gas_mass = np.concatenate(gas_mass) if gas_mass else np.array([])
-    star_pos = np.concatenate(star_pos) if star_pos else np.array([])
-    star_mass = np.concatenate(star_mass) if star_mass else np.array([])
-
-    if len(hydro_dm_pos) > 0:
-        hydro_dm_pos /= 1000.0
-        hydro_dm_mass *= 1e10
-    if len(gas_pos) > 0:
-        gas_pos /= 1000.0
-        gas_mass *= 1e10
-    if len(star_pos) > 0:
-        star_pos /= 1000.0
-        star_mass *= 1e10
-
-    return dm_pos, dm_mass, hydro_dm_pos, hydro_dm_mass, gas_pos, gas_mass, star_pos, star_mass
-
-def load_halos(fof_file, mass_threshold=1e13):
-    """Load halo catalog from FOF file."""
-    halo_pos, halo_mass = [], []
-    if os.path.exists(fof_file):
-        with h5py.File(fof_file, 'r') as f:
-            if 'Group/GroupPos' in f:
-                halo_pos = f['Group/GroupPos'][:]
-            if 'Group/Group_M_Crit200' in f:
-                halo_mass = f['Group/Group_M_Crit200'][:]
-    if len(halo_mass) > 0:
-        halo_pos = np.array(halo_pos) / 1000.0
-        halo_mass = np.array(halo_mass) * 1e10
-        mask = halo_mass > mass_threshold
-        return halo_pos[mask], halo_mass[mask]
-    return np.array([]), np.array([])
+# load_simulation and load_halos are now imported from vdm.io_utils
 
 def apply_periodic_boundary_minimum_image(positions, halo_center, box_size=50.0):
     """Get minimum image positions relative to halo (centered on halo)."""
@@ -242,13 +172,11 @@ def create_periodic_copies_for_rotation(positions, masses, box_size=50.0, buffer
 
 
 def pixelize_z_projection(positions, masses, box_size=50.0, npix=1024):
-    """Project particles along z-axis to create a 2D mass map."""
-    pos_ = np.ascontiguousarray(positions.astype(np.float32))[:, [0, 1]]
-    mass_ = np.ascontiguousarray(masses.astype(np.float32))
-        
-    field = np.zeros((npix, npix), dtype=np.float32)
-    MASL.MA(pos_, field, box_size, MAS='CIC', W=mass_, verbose=False)
-    return field
+    """Project particles along z-axis to create a 2D mass map.
+    
+    Wrapper around project_particles_2d from vdm.io_utils for backward compatibility.
+    """
+    return project_particles_2d(positions, masses, box_size, npix, axis=2)
 
 def process_halo_with_full_periodic_tiling(positions, masses, halo_center, 
                                            box_size=50.0, npix=1024, seed=None):

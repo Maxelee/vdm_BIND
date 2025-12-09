@@ -1,31 +1,123 @@
 # Power Spectrum Analysis Functions
+"""
+Consolidated power spectrum analysis module for VDM-BIND.
+
+Provides both single-image and batched power spectrum computations
+using the pylians Pk_library.
+"""
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.fft import fft2, fftshift, ifft2, ifftshift, fftfreq
+from typing import Tuple, Optional, Union
 import Pk_library as PKL
 
-def compute_power_spectrum_simple(image, BoxSize=50.0, MAS='CIC', threads=0):
+
+def compute_power_spectrum_simple(image: np.ndarray, BoxSize: float = 50.0, 
+                                   MAS: str = 'CIC', threads: int = 0) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute 2D power spectrum using pylians Pk_library.
     
-    Parameters:
-    - image: 2D numpy array of the density field
-    - BoxSize: Size of the box in Mpc/h
-    - MAS: Mass assignment scheme ('NGP', 'CIC', 'TSC', 'PCS')
-    - threads: Number of threads
+    Parameters
+    ----------
+    image : np.ndarray
+        2D numpy array of the density field
+    BoxSize : float
+        Size of the box in Mpc/h (default: 50.0)
+    MAS : str
+        Mass assignment scheme ('NGP', 'CIC', 'TSC', 'PCS') (default: 'CIC')
+    threads : int
+        Number of threads (default: 0)
     
-    Returns:
-    - Pk: 1D array of power spectrum values
-    - k: 1D array of wavenumber values
+    Returns
+    -------
+    tuple
+        (Pk, k) - 1D arrays of power spectrum values and wavenumbers
     """
     # Compute overdensity
     delta = image / np.mean(image, dtype=np.float64)
     delta -= 1.0
     
     # Compute power spectrum
-    Pk2D = PKL.Pk_plane(delta, BoxSize, MAS, threads)
+    Pk2D = PKL.Pk_plane(delta.astype(np.float32), BoxSize, MAS, threads)
     
     return Pk2D.Pk, Pk2D.k
+
+
+def compute_power_spectrum_batch(images: np.ndarray, BoxSize: float = 6.25,
+                                  MAS: str = 'NGP', threads: int = 0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute power spectra for a batch of 2D fields.
+    
+    This is the consolidated version replacing compute_binded_power in 
+    vdm/validation_plots.py and bind/analyses.py.
+    
+    Parameters
+    ----------
+    images : np.ndarray
+        Array of 2D fields, shape (N, H, W)
+    BoxSize : float
+        Physical box size in Mpc/h (default: 6.25 for halo cutouts)
+    MAS : str
+        Mass assignment scheme ('NGP', 'CIC', 'TSC', 'PCS') (default: 'NGP')
+    threads : int
+        Number of OpenMP threads (default: 0)
+    
+    Returns
+    -------
+    tuple
+        (k, Pk, Nmodes) - wavenumbers, power spectra array (N, Nk), number of modes
+    """
+    images = np.array(images, dtype=np.float64)
+    
+    # Compute overdensity for batch
+    delta = images / np.mean(images, dtype=np.float64, axis=(1, 2), keepdims=True)
+    delta -= 1.0
+    delta = delta.astype(np.float32)
+    
+    # Compute power spectrum for each image
+    Pk2D_list = [PKL.Pk_plane(delta[i], BoxSize, MAS, threads) for i in range(images.shape[0])]
+    
+    k = Pk2D_list[0].k
+    Nmodes = Pk2D_list[0].Nmodes
+    Pk = np.array([Pk2D.Pk for Pk2D in Pk2D_list])
+    
+    return k, Pk, Nmodes
+
+
+def compute_cross_power_spectrum(image1: np.ndarray, image2: np.ndarray,
+                                  BoxSize: float = 50.0, MAS: str = 'CIC',
+                                  threads: int = 0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute cross-power spectrum between two 2D fields.
+    
+    Parameters
+    ----------
+    image1 : np.ndarray
+        First 2D density field
+    image2 : np.ndarray
+        Second 2D density field
+    BoxSize : float
+        Size of the box in Mpc/h (default: 50.0)
+    MAS : str
+        Mass assignment scheme (default: 'CIC')
+    threads : int
+        Number of threads (default: 0)
+        
+    Returns
+    -------
+    tuple
+        (k, r, Pk) - wavenumbers, cross-correlation coefficient, cross-power
+    """
+    # Compute overdensities
+    delta1 = image1 / np.mean(image1, dtype=np.float64)
+    delta1 -= 1.0
+    delta2 = image2 / np.mean(image2, dtype=np.float64)
+    delta2 -= 1.0
+    
+    XPk2D = PKL.XPk_plane(delta1.astype(np.float32), delta2.astype(np.float32), 
+                          BoxSize, MAS, MAS, threads)
+    
+    return XPk2D.k, XPk2D.r, XPk2D.Pk
 
 
 def compute_power_spectrum_log(image):

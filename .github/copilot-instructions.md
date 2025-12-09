@@ -16,6 +16,7 @@ train_triple_model.py → vdm/vdm_model_triple.py → vdm/networks_clean.py
 ### Inference Pipeline (BIND)
 ```
 run_bind_unified.py → bind/bind.py → bind/workflow_utils.py → vdm/
+bind_predict.py → bind/bind.py (user-friendly CLI)
 ```
 - **Purpose**: Apply trained models to full N-body simulations
 - **Key steps**: Voxelize → Extract halos → Generate → Paste back
@@ -27,22 +28,72 @@ vdm_BIND/
 ├── config.py                 # Centralized path configuration (env vars)
 ├── train_model_clean.py      # Training entry point (3-channel)
 ├── train_triple_model.py     # Training entry point (triple independent)
-├── run_bind_unified.py       # BIND inference entry point
+├── run_bind_unified.py       # BIND inference on simulation suites
+├── bind_predict.py           # User-friendly BIND CLI for custom simulations
 ├── vdm/                      # Core VDM package
 │   ├── networks_clean.py     # UNet architecture
 │   ├── vdm_model_clean.py    # 3-channel LightCleanVDM
 │   ├── vdm_model_triple.py   # 3 independent VDMs
-│   └── astro_dataset.py      # Data loading
+│   ├── astro_dataset.py      # Data loading
+│   ├── io_utils.py           # Consolidated I/O utilities (load_simulation, project_particles_2d)
+│   └── validation_plots.py   # Validation plotting utilities
 ├── bind/                     # BIND inference package
 │   ├── bind.py               # Main BIND class
 │   ├── workflow_utils.py     # ConfigLoader, ModelManager, sample()
-│   └── analyses.py           # Evaluation utilities
+│   ├── analyses.py           # Evaluation utilities
+│   └── power_spec.py         # Consolidated power spectrum functions
 ├── configs/                  # Training configurations
 ├── scripts/                  # SLURM job scripts
 ├── data/                     # Normalization stats & quantile transformer
-├── tests/                    # Unit & integration tests
+├── tests/                    # Unit & integration tests (142 tests)
 ├── analysis/                 # Paper plots and notebooks
+│   ├── paper_utils.py        # Shared analysis functions (radial profiles, plotting)
+│   └── notebooks/            # Paper figures + training validation
+│       ├── 01-08_*.ipynb     # Paper analysis notebooks
+│       ├── training_loss_curves.ipynb     # TensorBoard loss visualization
+│       ├── training_validation.ipynb      # Test set generation & profiles
+│       └── bind_power_spectrum.ipynb      # BIND power spectrum analysis
 └── data_generation/          # Training data processing
+    ├── README.md             # Comprehensive data generation docs
+    ├── process_simulations.py  # Main MPI processing script (uses vdm.io_utils)
+    └── add_large_scale.py    # Multi-scale context extraction
+```
+
+## Consolidated Utility Modules
+
+### `vdm/io_utils.py` - I/O Utilities
+Centralized simulation loading and projection functions:
+```python
+from vdm.io_utils import load_simulation, project_particles_2d, load_halo_catalog
+
+# Load simulation particle data
+dm_pos, dm_mass, hydro_dm_pos, hydro_dm_mass, gas_pos, gas_mass, star_pos, star_mass = \
+    load_simulation(nbody_path, hydro_snapdir)
+
+# Project 3D particles to 2D grid
+field_2d = project_particles_2d(positions, masses, box_size=50.0, resolution=1024, axis=2)
+
+# Load halo catalog
+halo_pos, halo_mass, halo_radii = load_halo_catalog(fof_path, mass_threshold=1e13)
+```
+
+### `bind/power_spec.py` - Power Spectrum Analysis
+Consolidated power spectrum functions using Pk_library:
+```python
+from bind.power_spec import (
+    compute_power_spectrum_simple,    # Single 2D field → (Pk, k)
+    compute_power_spectrum_batch,     # Batch of fields → (k, Pk, Nmodes)
+    compute_cross_power_spectrum      # Cross-correlation → (k, r, Pk)
+)
+
+# Single field power spectrum
+Pk, k = compute_power_spectrum_simple(field_2d, BoxSize=50.0, MAS='CIC')
+
+# Batch power spectrum (e.g., for multiple halos)
+k, Pk_batch, Nmodes = compute_power_spectrum_batch(fields_batch, BoxSize=6.25)
+
+# Cross-correlation
+k, r, Pk_cross = compute_cross_power_spectrum(field1, field2, BoxSize=50.0)
 ```
 
 ## Environment Variables
@@ -113,15 +164,19 @@ from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 | `vdm/networks_clean.py` | UNet architecture with Fourier features, attention, cross-attention |
 | `vdm/vdm_model_clean.py` | 3-channel VDM with focal loss, per-channel weighting |
 | `vdm/vdm_model_triple.py` | 3 independent single-channel VDMs |
+| `vdm/io_utils.py` | **NEW** Consolidated I/O: `load_simulation()`, `project_particles_2d()`, `load_halo_catalog()` |
 | `bind/bind.py` | BIND class: voxelize, extract, generate, paste |
 | `bind/workflow_utils.py` | ConfigLoader, ModelManager, sample() function |
-| `run_bind_unified.py` | Main CLI for BIND inference on simulation suites |
+| `bind/power_spec.py` | **Consolidated** Power spectrum: `compute_power_spectrum_simple/batch()`, `compute_cross_power_spectrum()` |
+| `bind_predict.py` | User-friendly CLI for custom simulations (SubFind, Rockstar, CSV) |
+| `run_bind_unified.py` | BIND inference on CAMELS simulation suites |
+| `analysis/paper_utils.py` | Shared analysis functions: `compute_radial_profile()`, plotting utilities |
 
 ## Testing
 
 ### Running Tests
 ```bash
-# Run all tests
+# Run all tests (142 tests)
 python -m pytest tests/ -v
 
 # Run specific test file
@@ -139,6 +194,7 @@ python run_tests.py --validate
 - `tests/test_vdm.py` - UNet architecture, VDM model, noise schedules
 - `tests/test_bind.py` - Normalization, ConfigLoader, halo pasting
 - `tests/test_integration.py` - End-to-end pipeline tests
+- `tests/test_data_generation.py` - Data generation consistency tests
 
 ### Training Pipeline
 ```bash

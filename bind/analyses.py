@@ -8,6 +8,9 @@ import os
 
 try:
     import Pk_library as PKL
+    from bind.power_spec import (compute_power_spectrum_simple, 
+                                  compute_power_spectrum_batch,
+                                  compute_cross_power_spectrum)
     HAS_PKL = True
 except ImportError:
     HAS_PKL = False
@@ -356,23 +359,9 @@ def compute_halo_level_power_spectra(true_halos_all, gen_halos_all, boxsize, out
     
     print(f"Computing halo-level power spectra...")
     
-    def compute_binded_power(binded, boxsize=6.25):
-        binded = np.array(binded, dtype=np.float64)
-        delta_binded = binded / np.mean(binded, dtype=np.float64, axis=(1,2), keepdims=True)
-        delta_binded -= 1.0
-        delta_binded = delta_binded.astype(np.float32)
-        
-        BoxSize = boxsize
-        MAS = 'NGP'
-        threads = 0
-        
-        Pk2D_binded = [PKL.Pk_plane(delta_binded[i], BoxSize, MAS, threads) for i in range(binded.shape[0])]
-        k = Pk2D_binded[0].k
-        Nmodes = Pk2D_binded[0].Nmodes
-        Pk_binded = np.array([Pk2D_binded[i].Pk for i in range(binded.shape[0])])
-        return k, Pk_binded, Nmodes
-
+    # Use consolidated power spectrum functions from bind.power_spec
     def compute_binded_halo_cross_correlation(full_hydro, binded, boxsize=6.25):
+        """Compute cross-correlation for batched halo fields."""
         binded = np.array(binded, dtype=np.float64)
         delta_hydro = full_hydro / np.mean(full_hydro, dtype=np.float64, axis=(1,2), keepdims=True)
         delta_hydro -= 1.0
@@ -393,16 +382,16 @@ def compute_halo_level_power_spectra(true_halos_all, gen_halos_all, boxsize, out
         Nmodes = XPk2D[0].Nmodes
         return k, r, Nmodes
 
-    # Compute power spectra for each component
-    k, Pk_binded_dm, _ = compute_binded_power(np.array(gen_halos_all)[:, :, 0].mean(axis=1), boxsize=6.25)
-    k, Pk_binded_gas, _ = compute_binded_power(np.array(gen_halos_all)[:, :, 1].mean(axis=1), boxsize=6.25)
-    k, Pk_binded_star, _ = compute_binded_power(np.array(gen_halos_all)[:, :, 2].mean(axis=1), boxsize=6.25)
-    k, Pk_binded_total, _ = compute_binded_power(np.array(gen_halos_all).mean(axis=1).sum(axis=1), boxsize=6.25)
+    # Compute power spectra for each component using consolidated function
+    k, Pk_binded_dm, _ = compute_power_spectrum_batch(np.array(gen_halos_all)[:, :, 0].mean(axis=1), BoxSize=6.25)
+    k, Pk_binded_gas, _ = compute_power_spectrum_batch(np.array(gen_halos_all)[:, :, 1].mean(axis=1), BoxSize=6.25)
+    k, Pk_binded_star, _ = compute_power_spectrum_batch(np.array(gen_halos_all)[:, :, 2].mean(axis=1), BoxSize=6.25)
+    k, Pk_binded_total, _ = compute_power_spectrum_batch(np.array(gen_halos_all).mean(axis=1).sum(axis=1), BoxSize=6.25)
 
-    k, Pk_hydro_dm, _ = compute_binded_power(true_halos_all[:, 0], boxsize=6.25)
-    k, Pk_hydro_gas, _ = compute_binded_power(true_halos_all[:, 1], boxsize=6.25)
-    k, Pk_hydro_star, _ = compute_binded_power(true_halos_all[:, 2], boxsize=6.25)
-    k, Pk_hydro_total, _ = compute_binded_power(true_halos_all.sum(axis=1), boxsize=6.25)
+    k, Pk_hydro_dm, _ = compute_power_spectrum_batch(true_halos_all[:, 0], BoxSize=6.25)
+    k, Pk_hydro_gas, _ = compute_power_spectrum_batch(true_halos_all[:, 1], BoxSize=6.25)
+    k, Pk_hydro_star, _ = compute_power_spectrum_batch(true_halos_all[:, 2], BoxSize=6.25)
+    k, Pk_hydro_total, _ = compute_power_spectrum_batch(true_halos_all.sum(axis=1), BoxSize=6.25)
 
     k, r_hydro_binded_dm, Nmodes = compute_binded_halo_cross_correlation(
         true_halos_all[:, 0], np.array(gen_halos_all)[:, :, 0].mean(axis=1), boxsize=6.25)
