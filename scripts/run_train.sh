@@ -22,4 +22,4 @@ unset SLURM_NTASKS_PER_NODE
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # PyTorch Lightning DDP: ONE process, it spawns GPU workers internally
-srun python train_model_clean.py --config configs/clean_vdm_aggressive_stellar.ini
+srun python train_model_clean.py --config configs/clean_vdm_aggressive_stellar_restarts.ini
