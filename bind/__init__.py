@@ -6,6 +6,7 @@ This package provides:
 - ConfigLoader: Load model configurations
 - ModelManager: Initialize and load trained models
 - sample: Generate samples from trained models
+- Analysis functions for evaluation
 """
 
 from .bind import BIND, HaloPaster2D, HaloPaster3D

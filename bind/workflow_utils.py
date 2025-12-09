@@ -19,10 +19,9 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import pandas as pd
 import numpy as np
-import os
 
-# Get project root (directory containing this file's parent)
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Import centralized path configuration
+from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 
 def load_normalization_stats(base_path=None):
     """
@@ -30,7 +29,7 @@ def load_normalization_stats(base_path=None):
     
     Args:
         base_path: Directory containing the normalization .npz files.
-                   Defaults to project root.
+                   Defaults to NORMALIZATION_STATS_DIR from config.py
     
     Returns:
         dict with keys:
@@ -39,7 +38,7 @@ def load_normalization_stats(base_path=None):
             - star_mag_mean, star_mag_std
     """
     if base_path is None:
-        base_path = _PROJECT_ROOT
+        base_path = NORMALIZATION_STATS_DIR
     
     stats = {}
     
