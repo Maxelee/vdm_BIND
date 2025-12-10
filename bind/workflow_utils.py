@@ -233,11 +233,11 @@ class ConfigLoader:
     def _state_initialization(self):
         """Find the best checkpoint based on validation files."""
         self.tb_log_path = f"{self.tb_logs}/{self.model_name}/version_{self.version}/"
-        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch*')
+        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/latest*')
         if ckpts:
             ckpts.sort(key=self._natural_sort_key)
             self.best_ckpt = ckpts[-1]
-            self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
+            # self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
         else:
             self.best_ckpt = None
 
@@ -272,19 +272,27 @@ class ModelManager:
     @staticmethod
     def detect_model_type(config, verbose=False):
         """
-        Detect whether the model is 'clean' (3-channel) or 'triple' (3 separate models).
+        Detect whether the model is 'clean' (3-channel), 'triple' (3 separate models), or 'ddpm' (score_models).
         
         Detection order:
-        1. Check config.model_name for 'triple'
-        2. Check checkpoint state_dict for triple model keys
-        3. Default to 'clean'
+        1. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
+        2. Check config.model_name for 'triple'
+        3. Check checkpoint state_dict for model type keys
+        4. Default to 'clean'
         
         Returns:
-            str: 'clean' or 'triple'
+            str: 'clean', 'triple', or 'ddpm'
         """
         # Method 1: Check model_name in config
-        model_name = getattr(config, 'model_name', '')
-        if 'triple' in model_name.lower():
+        model_name = getattr(config, 'model_name', '').lower()
+        
+        # Check for DDPM/score models first
+        if any(x in model_name for x in ['ddpm', 'ncsnpp', 'score']):
+            if verbose:
+                print(f"[ModelManager] Detected 'ddpm' model from model_name: {model_name}")
+            return 'ddpm'
+        
+        if 'triple' in model_name:
             if verbose:
                 print(f"[ModelManager] Detected 'triple' model from model_name: {model_name}")
             return 'triple'
@@ -292,7 +300,18 @@ class ModelManager:
         # Method 2: Check checkpoint state_dict structure
         if config.best_ckpt and os.path.exists(config.best_ckpt):
             try:
-                state_dict = torch.load(config.best_ckpt, map_location='cpu', weights_only=False).get('state_dict', {})
+                checkpoint = torch.load(config.best_ckpt, map_location='cpu', weights_only=False)
+                state_dict = checkpoint.get('state_dict', {})
+                hparams = checkpoint.get('hyper_parameters', {})
+                
+                # Check for DDPM/score_models structure
+                # score_models saves 'score_model.*' keys
+                ddpm_keys = [k for k in state_dict.keys() if 'score_model' in k and 'model.score_model' not in k]
+                if ddpm_keys or hparams.get('sde_type') or hparams.get('sde'):
+                    if verbose:
+                        print(f"[ModelManager] Detected 'ddpm' model from checkpoint structure")
+                    return 'ddpm'
+                
                 # Triple models have keys like 'model.hydro_dm_model.*', 'model.gas_model.*', 'model.stars_model.*'
                 triple_keys = [k for k in state_dict.keys() if any(x in k for x in ['hydro_dm_model', 'gas_model', 'stars_model'])]
                 if triple_keys:
@@ -312,7 +331,7 @@ class ModelManager:
         """
         Initialize the VDM model and optionally the dataloader.
         
-        Supports both 'clean' (3-channel) and 'triple' (3 separate 1-channel) models.
+        Supports 'clean' (3-channel), 'triple' (3 separate 1-channel), and 'ddpm' (score_models) models.
         Model type is auto-detected from config.model_name or checkpoint structure.
         
         Args:
@@ -327,7 +346,9 @@ class ModelManager:
         # Detect model type
         model_type = ModelManager.detect_model_type(config, verbose=verbose)
         
-        if model_type == 'triple':
+        if model_type == 'ddpm':
+            return ModelManager._initialize_ddpm(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        elif model_type == 'triple':
             return ModelManager._initialize_triple(config, verbose=verbose, skip_data_loading=skip_data_loading)
         else:
             return ModelManager._initialize_clean(config, verbose=verbose, skip_data_loading=skip_data_loading)
@@ -529,6 +550,182 @@ class ModelManager:
                 print(f"[ModelManager] Dataset loaded.")
         
         return hydro, vdm_model
+    
+    @staticmethod
+    def _initialize_ddpm(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize a DDPM/score_models model (NCSNpp or DDPM architecture).
+        
+        These models use the score_models package and Denoising Score Matching loss.
+        """
+        if verbose:
+            print("[ModelManager] Initializing DDPM/Score Model...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Import DDPM module
+        try:
+            from vdm.ddpm_model import LightScoreModel, SCORE_MODELS_AVAILABLE
+            if not SCORE_MODELS_AVAILABLE:
+                raise ImportError("score_models package not installed")
+            from score_models import NCSNpp, DDPM
+        except ImportError as e:
+            raise ImportError(f"DDPM model requires score_models package: {e}")
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"DDPM model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        checkpoint = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        state_dict = checkpoint.get('state_dict', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in list(hparams.items())[:20]:  # Limit output
+                print(f"  {k}: {v}")
+        
+        # Extract model configuration from hparams
+        sde_type = hparams.get('sde_type', hparams.get('sde', 'vp'))
+        beta_min = hparams.get('beta_min', 0.1)
+        beta_max = hparams.get('beta_max', 20.0)
+        sigma_min = hparams.get('sigma_min', 0.01)
+        sigma_max = hparams.get('sigma_max', 50.0)
+        learning_rate = hparams.get('learning_rate', 1e-4)
+        n_sampling_steps = hparams.get('n_sampling_steps', 250)
+        use_param_conditioning = hparams.get('use_param_conditioning', False)
+        
+        # Try to detect architecture from checkpoint keys
+        # NCSNpp has specific layer names like 'all_modules', DDPM has 'down', 'up' blocks
+        architecture = 'ncsnpp'  # Default
+        if any('all_modules' in k for k in state_dict.keys()):
+            architecture = 'ncsnpp'
+        elif any('downs.' in k or 'ups.' in k for k in state_dict.keys()):
+            architecture = 'ddpm'
+        
+        # Auto-detect conditioning channels from model structure
+        # Look for NCSNpp's condition_input_channels or similar
+        conditioning_channels = getattr(config, 'conditioning_channels', 1)
+        large_scale_channels = getattr(config, 'large_scale_channels', 3)
+        n_params = getattr(config, 'n_params', 35) if use_param_conditioning else 0
+        
+        # Total spatial conditioning = 1 (DM) + large_scale_channels
+        total_spatial_cond = 1 + large_scale_channels
+        
+        if verbose:
+            print(f"[ModelManager] DDPM Model Configuration:")
+            print(f"  Architecture: {architecture}")
+            print(f"  SDE type: {sde_type}")
+            print(f"  Spatial conditioning channels: {total_spatial_cond}")
+            print(f"  Parameter conditioning: {use_param_conditioning} ({n_params} params)")
+            print(f"  Sampling steps: {n_sampling_steps}")
+        
+        # Create network based on detected architecture
+        # We need to match the exact architecture from training
+        output_channels = 3  # [DM, Gas, Stars]
+        
+        # Build condition list based on what was used in training
+        if use_param_conditioning:
+            condition_types = ['input', 'vector']
+        else:
+            condition_types = ['input']
+        
+        if architecture == 'ncsnpp':
+            # Get NCSNpp specific params from hparams or config
+            nf = hparams.get('nf', getattr(config, 'nf', 96))
+            ch_mult_str = hparams.get('ch_mult', getattr(config, 'ch_mult', '1,2,4,8'))
+            if isinstance(ch_mult_str, str):
+                ch_mult = tuple(map(int, ch_mult_str.split(',')))
+            else:
+                ch_mult = tuple(ch_mult_str) if hasattr(ch_mult_str, '__iter__') else (1, 2, 4, 8)
+            
+            net_kwargs = {
+                'channels': output_channels,
+                'dimensions': 2,
+                'nf': nf,
+                'ch_mult': ch_mult,
+                'attention': hparams.get('attention', True),
+                'condition': condition_types,
+                'condition_input_channels': total_spatial_cond,
+            }
+            if use_param_conditioning:
+                net_kwargs['condition_vector_channels'] = n_params
+            
+            net = NCSNpp(**net_kwargs)
+            
+        elif architecture == 'ddpm':
+            # DDPM architecture
+            nf = hparams.get('nf', getattr(config, 'nf', 96))
+            ch_mult_str = hparams.get('ch_mult', getattr(config, 'ch_mult', '1,2,4,8'))
+            if isinstance(ch_mult_str, str):
+                ch_mult = tuple(map(int, ch_mult_str.split(',')))
+            else:
+                ch_mult = tuple(ch_mult_str) if hasattr(ch_mult_str, '__iter__') else (1, 2, 4, 8)
+            
+            # DDPM with manual conditioning wrapper
+            from vdm.ddpm_model import ConditionedDDPMWrapper
+            
+            base_net = DDPM(
+                channels=output_channels + total_spatial_cond,
+                dimensions=2,
+                nf=nf,
+                ch_mult=ch_mult,
+            )
+            net = ConditionedDDPMWrapper(
+                net=base_net,
+                output_channels=output_channels,
+                conditioning_channels=total_spatial_cond,
+            )
+        else:
+            raise ValueError(f"Unknown architecture: {architecture}")
+        
+        # Create LightScoreModel
+        model = LightScoreModel(
+            model=net,
+            sde=sde_type,
+            beta_min=beta_min,
+            beta_max=beta_max,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            learning_rate=learning_rate,
+            n_sampling_steps=n_sampling_steps,
+            use_param_conditioning=use_param_conditioning,
+        )
+        
+        if verbose:
+            print(f"[ModelManager] Loading state dict into DDPM model...")
+        
+        # Load state dict
+        model.load_state_dict(state_dict, strict=False)
+        model = model.eval()
+        
+        if verbose:
+            n_params_model = sum(p.numel() for p in model.parameters())
+            print(f"[ModelManager] DDPM model loaded successfully.")
+            print(f"[ModelManager] Model parameters: {n_params_model:,}")
+        
+        # Load data if requested
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, model
     
     @staticmethod
     def _initialize_clean(config, verbose=False, skip_data_loading=False):
