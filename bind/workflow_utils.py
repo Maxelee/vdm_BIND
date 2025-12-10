@@ -97,15 +97,23 @@ class ConfigLoader:
         int_params = {'seed', 'cropsize', 'batch_size', 'num_workers', 'embedding_dim',
                       'norm_groups', 'n_blocks', 'n_attention_heads', 'version', 'ndim', 
                       'conditioning_channels', 'large_scale_channels', 'field_weight_warmup_steps',
-                      'cross_attention_heads', 'cross_attention_chunk_size', 'cross_attn_cond_downsample_factor'}
+                      'cross_attention_heads', 'cross_attention_chunk_size', 'cross_attn_cond_downsample_factor',
+                      # DDPM/score_models parameters
+                      'n_params', 'nf', 'num_res_blocks', 'n_sampling_steps', 'accumulate_grad_batches',
+                      'ema_update_after_step', 'ema_update_every'}
         float_params = {'gamma_min', 'gamma_max', 'learning_rate', 'mass_conservation_weight',
                         'sparsity_threshold', 'sparse_loss_weight', 'focal_alpha', 'focal_gamma',
-                        'param_prediction_weight', 'cross_attention_dropout'}
+                        'param_prediction_weight', 'cross_attention_dropout',
+                        # DDPM/score_models parameters
+                        'beta_min', 'beta_max', 'sigma_min', 'sigma_max', 'ema_decay', 'dropout'}
         bool_params = {'use_large_scale', 'use_fourier_features', 'fourier_legacy', 'legacy_fourier',
                        'add_attention', 'use_progressive_field_weighting', 'use_mass_conservation',
                        'use_sparsity_aware_loss', 'use_focal_loss', 'use_param_prediction', 
                        'use_auxiliary_mask', 'antithetic_time_sampling', 'use_cross_attention',
-                       'use_chunked_cross_attention', 'downsample_cross_attn_cond'}
+                       'use_chunked_cross_attention', 'downsample_cross_attn_cond',
+                       # DDPM/score_models parameters
+                       'use_param_conditioning', 'attention', 'enable_ema', 'enable_early_stopping',
+                       'enable_gradient_monitoring'}
         
         # Assign attributes with correct types
         for key, value in params.items():
