@@ -52,6 +52,8 @@ def train(
     ema_decay=0.9999,
     ema_update_after_step=0,
     ema_update_every=1,
+    # Memory optimization
+    accumulate_grad_batches=1,
 ):
     """
     Train the Score Model.
@@ -74,6 +76,7 @@ def train(
         ema_decay: EMA decay factor
         ema_update_after_step: Start EMA after this many steps
         ema_update_every: Update EMA every N steps
+        accumulate_grad_batches: Accumulate gradients over N batches
     """
     
     ckpt_path = None
@@ -166,6 +169,7 @@ def train(
         max_epochs=max_epochs,
         limit_train_batches=limit_train_batches,
         gradient_clip_val=1.0,
+        accumulate_grad_batches=accumulate_grad_batches,
         callbacks=callbacks_list,
         sync_batchnorm=True if num_devices > 1 else False,
         precision="32",
@@ -245,6 +249,7 @@ if __name__ == "__main__":
         learning_rate = float(params['learning_rate'])
         lr_scheduler = params.get('lr_scheduler', fallback='cosine')
         max_epochs = int(params.get('max_epochs', fallback=100))
+        accumulate_grad_batches = int(params.get('accumulate_grad_batches', fallback=1))
         
         # Large-scale conditioning
         large_scale_channels = int(params.get('large_scale_channels', fallback=3))
@@ -315,6 +320,10 @@ if __name__ == "__main__":
     print(f"  Output channels: {output_channels}")
     print(f"  Learning rate: {learning_rate}")
     print(f"  Batch size: {batch_size}")
+    print(f"  Accumulate grad batches: {accumulate_grad_batches}")
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    effective_batch = batch_size * accumulate_grad_batches * num_gpus
+    print(f"  Effective batch size: {effective_batch} (batch={batch_size} × accum={accumulate_grad_batches} × gpus={num_gpus})")
     print(f"{'='*80}\n")
     
     # Check data directory exists
@@ -428,4 +437,5 @@ if __name__ == "__main__":
         ema_decay=ema_decay,
         ema_update_after_step=ema_update_after_step,
         ema_update_every=ema_update_every,
+        accumulate_grad_batches=accumulate_grad_batches,
     )
