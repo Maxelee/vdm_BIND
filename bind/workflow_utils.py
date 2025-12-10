@@ -705,8 +705,27 @@ class ModelManager:
         if verbose:
             print(f"[ModelManager] Loading state dict into DDPM model...")
         
-        # Load state dict
-        model.load_state_dict(state_dict, strict=False)
+        # Check if EMA weights are available (preferred for inference)
+        ema_state = checkpoint.get('ema_callback_state', {})
+        ema_weights = ema_state.get('ema_weights', None)
+        
+        if ema_weights is not None and len(ema_weights) > 0:
+            if verbose:
+                print(f"[ModelManager] Found EMA weights ({len(ema_weights)} tensors), using for inference...")
+            # Load training weights first, then override with EMA where available
+            model.load_state_dict(state_dict, strict=False)
+            # Now load EMA weights over the model parameters
+            with torch.no_grad():
+                for name, param in model.named_parameters():
+                    if name in ema_weights:
+                        param.data.copy_(ema_weights[name])
+            if verbose:
+                print(f"[ModelManager] ✓ EMA weights loaded successfully")
+        else:
+            if verbose:
+                print(f"[ModelManager] No EMA weights found, using training weights")
+            model.load_state_dict(state_dict, strict=False)
+        
         model = model.eval()
         
         if verbose:
@@ -1190,7 +1209,7 @@ def sample(vdm, conditions, batch_size=1, conditional_params=None,):
         hydro_sample = vdm.draw_samples(
             conditioning=cond_expanded,
             batch_size=batch_size,
-            n_sampling_steps=getattr(vdm.hparams, 'n_sampling_steps', 250),
+            n_sampling_steps=getattr(vdm.hparams, 'n_sampling_steps', 1000),
             param_conditioning=param_expanded,
         )  
         
