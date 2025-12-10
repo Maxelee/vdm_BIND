@@ -233,11 +233,11 @@ class ConfigLoader:
     def _state_initialization(self):
         """Find the best checkpoint based on validation files."""
         self.tb_log_path = f"{self.tb_logs}/{self.model_name}/version_{self.version}/"
-        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/latest*')
+        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch*')
         if ckpts:
             ckpts.sort(key=self._natural_sort_key)
             self.best_ckpt = ckpts[-1]
-            # self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
+            self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
         else:
             self.best_ckpt = None
 
