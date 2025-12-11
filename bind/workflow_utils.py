@@ -310,6 +310,8 @@ class ModelManager:
     - triple: Three independent 1-channel models (LightTripleVDM)
     - ddpm: Score-based diffusion model (score_models package)
     - interpolant: Flow matching / stochastic interpolant (LightInterpolant)
+    - consistency: Consistency models (Song et al., 2023) - single/few-step sampling
+    - ot_flow: Optimal Transport Flow Matching (Lipman et al., 2022)
     
     The model type is auto-detected from:
     1. config.model_name containing keywords
@@ -322,19 +324,33 @@ class ModelManager:
         Detect model type from config and/or checkpoint.
         
         Detection order:
-        1. Check config.model_name for 'interpolant' or 'flow'
-        2. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
-        3. Check config.model_name for 'triple'
-        4. Check checkpoint state_dict for model type keys
-        5. Default to 'clean'
+        1. Check config.model_name for 'consistency'
+        2. Check config.model_name for 'ot_flow' or 'ot-flow' or 'optimal_transport'
+        3. Check config.model_name for 'interpolant' or 'flow'
+        4. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
+        5. Check config.model_name for 'triple'
+        6. Check checkpoint state_dict for model type keys
+        7. Default to 'clean'
         
         Returns:
-            str: 'clean', 'triple', 'ddpm', or 'interpolant'
+            str: 'clean', 'triple', 'ddpm', 'interpolant', 'consistency', or 'ot_flow'
         """
         # Method 1: Check model_name in config
         model_name = getattr(config, 'model_name', '').lower()
         
-        # Check for interpolant/flow matching first
+        # Check for consistency models first (most specific)
+        if 'consistency' in model_name:
+            if verbose:
+                print(f"[ModelManager] Detected 'consistency' model from model_name: {model_name}")
+            return 'consistency'
+        
+        # Check for OT flow matching (before generic 'flow')
+        if any(x in model_name for x in ['ot_flow', 'ot-flow', 'otflow', 'optimal_transport']):
+            if verbose:
+                print(f"[ModelManager] Detected 'ot_flow' model from model_name: {model_name}")
+            return 'ot_flow'
+        
+        # Check for interpolant/flow matching
         if any(x in model_name for x in ['interpolant', 'flow']):
             if verbose:
                 print(f"[ModelManager] Detected 'interpolant' model from model_name: {model_name}")
@@ -357,6 +373,22 @@ class ModelManager:
                 checkpoint = torch.load(config.best_ckpt, map_location='cpu', weights_only=False)
                 state_dict = checkpoint.get('state_dict', {})
                 hparams = checkpoint.get('hyper_parameters', {})
+                
+                # Check for consistency model structure
+                # Consistency models have 'consistency_model.*' or 'target_model.*' keys
+                consistency_keys = [k for k in state_dict.keys() if 'consistency_model' in k or 'target_model' in k]
+                if consistency_keys or hparams.get('ct_n_steps') or hparams.get('denoising_warmup_epochs'):
+                    if verbose:
+                        print(f"[ModelManager] Detected 'consistency' model from checkpoint structure")
+                    return 'consistency'
+                
+                # Check for OT flow model structure
+                # OT flow models have 'ot_interpolant.*' keys or 'ot_method' in hparams
+                ot_flow_keys = [k for k in state_dict.keys() if 'ot_interpolant' in k]
+                if ot_flow_keys or hparams.get('ot_method') or hparams.get('ot_reg'):
+                    if verbose:
+                        print(f"[ModelManager] Detected 'ot_flow' model from checkpoint structure")
+                    return 'ot_flow'
                 
                 # Check for interpolant model structure
                 # Interpolant models have 'interpolant.*' keys or x0_mode in hparams
@@ -393,7 +425,7 @@ class ModelManager:
         """
         Initialize the VDM model and optionally the dataloader.
         
-        Supports 'clean', 'triple', 'ddpm', and 'interpolant' models.
+        Supports 'clean', 'triple', 'ddpm', 'interpolant', 'consistency', and 'ot_flow' models.
         Model type is auto-detected from config.model_name or checkpoint structure.
         
         Args:
@@ -408,7 +440,11 @@ class ModelManager:
         # Detect model type
         model_type = ModelManager.detect_model_type(config, verbose=verbose)
         
-        if model_type == 'interpolant':
+        if model_type == 'consistency':
+            return ModelManager._initialize_consistency(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        elif model_type == 'ot_flow':
+            return ModelManager._initialize_ot_flow(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        elif model_type == 'interpolant':
             return ModelManager._initialize_interpolant(config, verbose=verbose, skip_data_loading=skip_data_loading)
         elif model_type == 'ddpm':
             return ModelManager._initialize_ddpm(config, verbose=verbose, skip_data_loading=skip_data_loading)
@@ -1000,6 +1036,328 @@ class ModelManager:
         if verbose:
             n_params_total = sum(p.numel() for p in model.parameters())
             print(f"[ModelManager] ✓ Interpolant model loaded successfully")
+            print(f"[ModelManager] Model parameters: {n_params_total:,}")
+            print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
+        
+        # Load data if requested
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, model
+
+    @staticmethod
+    def _initialize_consistency(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize a Consistency Model (Song et al., 2023).
+        
+        Consistency models enable single-step or few-step high-quality sampling
+        by learning to map any point on the diffusion trajectory directly to clean data.
+        """
+        if verbose:
+            print("[ModelManager] Initializing CONSISTENCY model (single/few-step sampling)...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Import consistency module
+        from vdm.consistency_model import (
+            LightConsistency, ConsistencyModel, ConsistencyFunction,
+            ConsistencyNoiseSchedule, ConsistencyNetWrapper
+        )
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"Consistency model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        state_dict = checkpoint.get('state_dict', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in list(hparams.items())[:15]:
+                print(f"  {k}: {v}")
+        
+        # Extract model configuration from hparams
+        n_sampling_steps = hparams.get('n_sampling_steps', 1)
+        ct_n_steps = hparams.get('ct_n_steps', 18)
+        x0_mode = hparams.get('x0_mode', 'zeros')
+        sigma_min = hparams.get('sigma_min', 0.002)
+        sigma_max = hparams.get('sigma_max', 80.0)
+        sigma_data = hparams.get('sigma_data', 0.5)
+        learning_rate = hparams.get('learning_rate', 1e-4)
+        
+        # Auto-detect conditioning channels from config
+        conditioning_channels = getattr(config, 'conditioning_channels', 1)
+        large_scale_channels = getattr(config, 'large_scale_channels', 3)
+        total_conditioning_channels = conditioning_channels + large_scale_channels
+        output_channels = 3  # [DM, Gas, Stars]
+        
+        # Get UNet parameters from config/hparams
+        embedding_dim = getattr(config, 'embedding_dim', 256)
+        n_blocks = getattr(config, 'n_blocks', 32)
+        norm_groups = getattr(config, 'norm_groups', 8)
+        n_attention_heads = getattr(config, 'n_attention_heads', 8)
+        use_fourier_features = getattr(config, 'use_fourier_features', True)
+        fourier_legacy = getattr(config, 'fourier_legacy', False)
+        add_attention = getattr(config, 'add_attention', True)
+        use_param_conditioning = hparams.get('use_param_conditioning', getattr(config, 'use_param_conditioning', True))
+        
+        if verbose:
+            print(f"[ModelManager] Consistency Model Configuration:")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  CT discretization steps: {ct_n_steps}")
+            print(f"  Sigma range: [{sigma_min}, {sigma_max}]")
+            print(f"  Conditioning channels: {total_conditioning_channels}")
+            print(f"  Param conditioning: {use_param_conditioning}")
+        
+        # Create UNetVDM - same architecture as train_consistency.py
+        from vdm.networks_clean import UNetVDM
+        
+        # Load param normalization if using param conditioning
+        param_min = None
+        param_max = None
+        if use_param_conditioning:
+            param_norm_path = hparams.get('param_norm_path', getattr(config, 'param_norm_path', None))
+            if param_norm_path and os.path.exists(param_norm_path):
+                import pandas as pd
+                minmax_df = pd.read_csv(param_norm_path)
+                param_min = np.array(minmax_df['MinVal'])
+                param_max = np.array(minmax_df['MaxVal'])
+                if verbose:
+                    print(f"[ModelManager] Loaded {len(param_min)} param bounds from {param_norm_path}")
+        
+        unet = UNetVDM(
+            input_channels=output_channels,  # Target channels (3)
+            conditioning_channels=conditioning_channels,  # DM channels (1)
+            large_scale_channels=large_scale_channels,  # Large-scale context (3)
+            embedding_dim=embedding_dim,
+            n_blocks=n_blocks,
+            norm_groups=norm_groups,
+            n_attention_heads=n_attention_heads,
+            use_fourier_features=use_fourier_features,
+            legacy_fourier=fourier_legacy,
+            add_attention=add_attention,
+            use_param_conditioning=use_param_conditioning,
+            param_min=param_min,
+            param_max=param_max,
+        )
+        
+        # Wrap for consistency prediction
+        net_wrapper = ConsistencyNetWrapper(
+            net=unet,
+            output_channels=output_channels,
+            conditioning_channels=total_conditioning_channels,
+        )
+        
+        # Create consistency function and noise schedule
+        noise_schedule = ConsistencyNoiseSchedule(
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+        )
+        
+        consistency_fn = ConsistencyFunction(
+            net=net_wrapper,
+            sigma_data=sigma_data,
+            sigma_min=sigma_min,
+        )
+        
+        # Create consistency model core
+        consistency_model = ConsistencyModel(
+            consistency_fn=consistency_fn,
+            noise_schedule=noise_schedule,
+            sigma_data=sigma_data,
+        )
+        
+        # Create LightConsistency
+        model = LightConsistency(
+            consistency_model=consistency_model,
+            learning_rate=learning_rate,
+            n_sampling_steps=n_sampling_steps,
+            x0_mode=x0_mode,
+            use_param_conditioning=use_param_conditioning,
+            ct_n_steps=ct_n_steps,
+        )
+        
+        if verbose:
+            print(f"[ModelManager] Loading state dict into LightConsistency...")
+        
+        # Load state dict
+        model.load_state_dict(state_dict)
+        model = model.eval().to(device)
+        
+        if verbose:
+            n_params_total = sum(p.numel() for p in model.parameters())
+            print(f"[ModelManager] ✓ Consistency model loaded successfully")
+            print(f"[ModelManager] Model parameters: {n_params_total:,}")
+            print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
+        
+        # Load data if requested
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, model
+
+    @staticmethod
+    def _initialize_ot_flow(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize an Optimal Transport Flow Matching model (Lipman et al., 2022).
+        
+        OT flow matching uses optimal transport coupling for straighter interpolation paths.
+        """
+        if verbose:
+            print("[ModelManager] Initializing OT FLOW MATCHING model...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Import OT flow module
+        from vdm.ot_flow_model import LightOTFlow, OTVelocityNetWrapper
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"OT Flow model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        state_dict = checkpoint.get('state_dict', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in list(hparams.items())[:15]:
+                print(f"  {k}: {v}")
+        
+        # Extract model configuration from hparams
+        n_sampling_steps = hparams.get('n_sampling_steps', 50)
+        x0_mode = hparams.get('x0_mode', 'zeros')
+        ot_method = hparams.get('ot_method', 'exact')
+        ot_reg = hparams.get('ot_reg', 0.01)
+        use_stochastic_interpolant = hparams.get('use_stochastic_interpolant', False)
+        sigma = hparams.get('sigma', 0.0)
+        learning_rate = hparams.get('learning_rate', 1e-4)
+        
+        # Auto-detect conditioning channels from config
+        conditioning_channels = getattr(config, 'conditioning_channels', 1)
+        large_scale_channels = getattr(config, 'large_scale_channels', 3)
+        total_conditioning_channels = conditioning_channels + large_scale_channels
+        output_channels = 3  # [DM, Gas, Stars]
+        
+        # Get UNet parameters from config/hparams
+        embedding_dim = getattr(config, 'embedding_dim', 256)
+        n_blocks = getattr(config, 'n_blocks', 32)
+        norm_groups = getattr(config, 'norm_groups', 8)
+        n_attention_heads = getattr(config, 'n_attention_heads', 8)
+        use_fourier_features = getattr(config, 'use_fourier_features', True)
+        fourier_legacy = getattr(config, 'fourier_legacy', False)
+        add_attention = getattr(config, 'add_attention', True)
+        use_param_conditioning = hparams.get('use_param_conditioning', getattr(config, 'use_param_conditioning', True))
+        
+        if verbose:
+            print(f"[ModelManager] OT Flow Model Configuration:")
+            print(f"  x0 mode: {x0_mode}")
+            print(f"  OT method: {ot_method}")
+            print(f"  OT regularization: {ot_reg}")
+            print(f"  Stochastic: {use_stochastic_interpolant} (sigma={sigma})")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  Conditioning channels: {total_conditioning_channels}")
+            print(f"  Param conditioning: {use_param_conditioning}")
+        
+        # Create UNetVDM - same architecture as train_ot_flow.py
+        from vdm.networks_clean import UNetVDM
+        
+        # Load param normalization if using param conditioning
+        param_min = None
+        param_max = None
+        if use_param_conditioning:
+            param_norm_path = hparams.get('param_norm_path', getattr(config, 'param_norm_path', None))
+            if param_norm_path and os.path.exists(param_norm_path):
+                import pandas as pd
+                minmax_df = pd.read_csv(param_norm_path)
+                param_min = np.array(minmax_df['MinVal'])
+                param_max = np.array(minmax_df['MaxVal'])
+                if verbose:
+                    print(f"[ModelManager] Loaded {len(param_min)} param bounds from {param_norm_path}")
+        
+        unet = UNetVDM(
+            input_channels=output_channels,  # Target channels (3)
+            conditioning_channels=conditioning_channels,  # DM channels (1)
+            large_scale_channels=large_scale_channels,  # Large-scale context (3)
+            embedding_dim=embedding_dim,
+            n_blocks=n_blocks,
+            norm_groups=norm_groups,
+            n_attention_heads=n_attention_heads,
+            use_fourier_features=use_fourier_features,
+            legacy_fourier=fourier_legacy,
+            add_attention=add_attention,
+            use_param_conditioning=use_param_conditioning,
+            param_min=param_min,
+            param_max=param_max,
+        )
+        
+        # Wrap for velocity prediction
+        velocity_model = OTVelocityNetWrapper(
+            net=unet,
+            output_channels=output_channels,
+            conditioning_channels=total_conditioning_channels,
+        )
+        
+        # Create LightOTFlow
+        model = LightOTFlow(
+            velocity_model=velocity_model,
+            learning_rate=learning_rate,
+            n_sampling_steps=n_sampling_steps,
+            use_stochastic_interpolant=use_stochastic_interpolant,
+            sigma=sigma,
+            x0_mode=x0_mode,
+            use_param_conditioning=use_param_conditioning,
+            ot_method=ot_method,
+            ot_reg=ot_reg,
+        )
+        
+        if verbose:
+            print(f"[ModelManager] Loading state dict into LightOTFlow...")
+        
+        # Load state dict
+        model.load_state_dict(state_dict)
+        model = model.eval().to(device)
+        
+        if verbose:
+            n_params_total = sum(p.numel() for p in model.parameters())
+            print(f"[ModelManager] ✓ OT Flow model loaded successfully")
             print(f"[ModelManager] Model parameters: {n_params_total:,}")
             print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
         

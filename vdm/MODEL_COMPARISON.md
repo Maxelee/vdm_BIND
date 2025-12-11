@@ -1,6 +1,6 @@
 # Generative Model Comparison for VDM-BIND
 
-This document provides a comprehensive comparison of the four generative modeling approaches implemented in VDM-BIND for learning the DMO → Hydro mapping. We explain the mathematical foundations, practical tradeoffs, and our recommendations for the best approach.
+This document provides a comprehensive comparison of the six generative modeling approaches implemented in VDM-BIND for learning the DMO → Hydro mapping. We explain the mathematical foundations, practical tradeoffs, and our recommendations for the best approach.
 
 **Authors**: VDM-BIND Development Team  
 **Last Updated**: 2025
@@ -21,7 +21,7 @@ This document provides a comprehensive comparison of the four generative modelin
 
 ## Overview
 
-The VDM-BIND project aims to learn a mapping from Dark Matter Only (DMO) N-body simulations to full Hydrodynamical simulations, predicting three baryonic fields: [Dark Matter (hydro), Gas, Stars]. We explore four generative modeling approaches:
+The VDM-BIND project aims to learn a mapping from Dark Matter Only (DMO) N-body simulations to full Hydrodynamical simulations, predicting three baryonic fields: [Dark Matter (hydro), Gas, Stars]. We explore six generative modeling approaches:
 
 | Model | File | Approach | Key Innovation |
 |-------|------|----------|----------------|
@@ -29,8 +29,10 @@ The VDM-BIND project aims to learn a mapping from Dark Matter Only (DMO) N-body 
 | **VDM (Triple)** | `vdm_model_triple.py` | 3 independent VDMs | Per-channel specialization |
 | **DDPM** | `ddpm_model.py` | Score-based diffusion | Denoising Score Matching, flexible architectures |
 | **Interpolant** | `interpolant_model.py` | Flow matching | Deterministic ODE, simple velocity MSE loss |
+| **Consistency** | `consistency_model.py` | Consistency models | Single-step or few-step sampling |
+| **OT Flow** | `ot_flow_model.py` | OT flow matching | Optimal transport coupling for straighter paths |
 
-Why explore multiple approaches? Each method makes different assumptions about the underlying data distribution and learning process. By implementing all four, we can empirically determine which best captures the complex DMO → Hydro relationship, where:
+Why explore multiple approaches? Each method makes different assumptions about the underlying data distribution and learning process. By implementing all six, we can empirically determine which best captures the complex DMO → Hydro relationship, where:
 - The mapping is **many-to-one** (multiple hydro realizations per DMO)
 - The **stellar field is extremely sparse** (challenging for MSE-based methods)
 - We need **fast inference** for application to large cosmological volumes
@@ -151,6 +153,131 @@ where $\sigma(t) = \sigma_0 \sqrt{2t(1-t)}$ (zero at endpoints, maximal at $t=0.
 
 ---
 
+### 4. Consistency Models (Song et al., 2023)
+
+Consistency models learn to map any point on the diffusion trajectory directly to the clean data, enabling **single-step or few-step generation**.
+
+#### Key Insight
+
+The consistency function $f_\theta$ satisfies the **self-consistency property**:
+
+$$f_\theta(x_t, t) = f_\theta(x_{t'}, t') = x_0, \quad \forall t, t' \in [\epsilon, T]$$
+
+For any two points on the same probability flow ODE trajectory, the consistency function outputs the same (clean) data point.
+
+#### Skip Connection Parameterization
+
+To enforce the boundary condition $f_\theta(x_\epsilon, \epsilon) \approx x_\epsilon$, we use:
+
+$$f_\theta(x, \sigma) = c_{\text{skip}}(\sigma) \cdot x + c_{\text{out}}(\sigma) \cdot F_\theta(x, \sigma)$$
+
+where:
+- $c_{\text{skip}}(\sigma) = \sigma_{\text{data}}^2 / (\sigma^2 + \sigma_{\text{data}}^2)$
+- $c_{\text{out}}(\sigma) = \sigma \cdot \sigma_{\text{data}} / \sqrt{\sigma^2 + \sigma_{\text{data}}^2}$
+
+This ensures $f_\theta(x, \sigma_{\text{min}}) \approx x$ at minimal noise.
+
+#### Noise Schedule
+
+Consistency models use a power-law schedule:
+
+$$\sigma(t) = \left( \sigma_{\text{min}}^{1/\rho} + t \cdot (\sigma_{\text{max}}^{1/\rho} - \sigma_{\text{min}}^{1/\rho}) \right)^\rho$$
+
+with typical values $\sigma_{\text{min}} = 0.002$, $\sigma_{\text{max}} = 80$, $\rho = 7$.
+
+#### Training (Consistency Training)
+
+For discrete timesteps $n \in \{1, \ldots, N-1\}$:
+
+1. Sample data $x_0$ and noise $\epsilon$
+2. Compute $x_{\sigma_n} = x_0 + \sigma_n \epsilon$ and $x_{\sigma_{n+1}} = x_0 + \sigma_{n+1} \epsilon$
+3. Loss: $\mathcal{L}_{\text{CT}} = \mathbb{E} \left[ \| f_\theta(x_{\sigma_{n+1}}, \sigma_{n+1}) - f_{\theta^-}(x_{\sigma_n}, \sigma_n) \|^2 \right]$
+
+where $\theta^-$ is an EMA of $\theta$ (target network).
+
+#### Sampling
+
+**Single-step**: $\hat{x}_0 = f_\theta(x_T, \sigma_{\text{max}})$
+
+**Multi-step** (iterative refinement):
+```
+for i in range(n_steps):
+    x = f_θ(x, σ_i)  # Map to clean
+    if i < n_steps - 1:
+        x = x + σ_{i+1} * ε  # Add noise for next step
+```
+
+#### Key Advantages
+
+- **Single-step sampling**: Generate in one forward pass
+- **Few-step refinement**: Trade compute for quality
+- **Maintains diffusion quality**: With proper training, achieves comparable FID
+
+---
+
+### 5. Optimal Transport Flow Matching (Lipman et al., 2022)
+
+Standard flow matching uses **random pairing** between source and target. OT flow matching uses **optimal transport** to find better pairings, resulting in **straighter paths**.
+
+#### Problem with Random Pairing
+
+With random pairing $(x_0^{(i)}, x_1^{(i)})$, paths can cross and be unnecessarily curved:
+
+```
+Random:         OT:
+x1_a ←─╲ ╱── x0_a    x1_a ←───── x0_a
+        ╳             
+x1_b ←─╱ ╲── x0_b    x1_b ←───── x0_b
+```
+
+Crossed paths lead to slower learning and higher variance.
+
+#### Optimal Transport Coupling
+
+Find the **optimal assignment** $\pi^*$ that minimizes total transport cost:
+
+$$\pi^* = \arg\min_\pi \sum_{i,j} \pi_{ij} \cdot c(x_0^{(i)}, x_1^{(j)})$$
+
+where $c(\cdot, \cdot)$ is a cost function (typically squared Euclidean distance).
+
+For mini-batches, we compute **mini-batch OT**:
+1. Build cost matrix $M_{ij} = \|x_0^{(i)} - x_1^{(j)}\|^2$
+2. Solve OT problem to get assignment
+3. Reorder pairs according to OT plan
+
+#### OT Methods
+
+**Exact OT (EMD)**: Earth Mover's Distance
+- Computes exact optimal assignment
+- $O(B^3)$ complexity for batch size $B$
+- Used with `ot.emd()` from POT library
+
+**Sinkhorn (Entropic OT)**:
+- Adds entropy regularization: $\min_\pi \sum_{ij} \pi_{ij} c_{ij} + \epsilon H(\pi)$
+- Faster: $O(B^2 \log B)$ iterations
+- Softer assignments (not permutation)
+- Trade-off via regularization $\epsilon$
+
+#### Training Objective
+
+Same as standard flow matching, but with OT-paired samples:
+
+$$\mathcal{L}_{\text{OT-FM}} = \mathbb{E}_{t, (x_0, x_1) \sim \pi^*} \left[ \| v_\theta(x_t, t) - (x_1 - x_0) \|^2 \right]$$
+
+#### Key Advantages
+
+- **Straighter paths**: Lower variance, faster convergence
+- **Better sample quality**: Particularly for structured data
+- **Same sampling**: OT only affects training; sampling is identical to flow matching
+
+#### Trade-offs
+
+- **Training overhead**: OT computation per mini-batch
+- **Mini-batch approximation**: Global OT is approximated by batch OT
+- **Memory**: Need to store cost matrix $O(B^2)$
+
+---
+
 ## Model Implementations
 
 ### `vdm_model_clean.py` - Joint 3-Channel VDM
@@ -245,6 +372,54 @@ class LightInterpolant(LightningModule):
 
 ---
 
+### `consistency_model.py` - Consistency Models
+
+```python
+class LightConsistency(LightningModule):
+    """
+    Consistency model (Song et al., 2023):
+    - Single-step or few-step sampling
+    - Self-consistency training with EMA target
+    - Skip connection parameterization
+    - Optional denoising pre-training
+    """
+```
+
+**Key Features**:
+- **Single-step sampling**: Generate in one forward pass
+- **Few-step refinement**: Trade compute for quality
+- **EMA target network**: Stabilizes consistency training
+- **Skip connection**: Enforces boundary condition at low noise
+- **Denoising warmup**: Optional pre-training for stability
+
+**When to use**: When inference speed is critical and you need diffusion-quality results. Ideal for real-time or interactive applications.
+
+---
+
+### `ot_flow_model.py` - OT Flow Matching
+
+```python
+class LightOTFlow(LightningModule):
+    """
+    Optimal Transport Flow Matching:
+    - OT-paired samples for straighter paths
+    - Exact EMD or Sinkhorn OT methods
+    - Same sampling as standard flow matching
+    - Path straightness metrics for monitoring
+    """
+```
+
+**Key Features**:
+- **OT coupling**: Pairs source/target samples optimally
+- **Straighter paths**: Lower variance, faster convergence
+- **Method choice**: Exact (EMD) or entropic (Sinkhorn) OT
+- **OT warmup**: Optional gradual OT introduction
+- **Same sampling**: Inference identical to standard flow matching
+
+**When to use**: When training quality matters more than speed, for structured data where path straightness helps, or when standard flow matching shows high variance.
+
+---
+
 ## Key Differences
 
 ### 1. What the Network Learns
@@ -254,6 +429,8 @@ class LightInterpolant(LightningModule):
 | VDM/DDPM | Noise $\epsilon$ | "What noise was added?" |
 | Score | Score $\nabla \log p(x)$ | "Which direction increases likelihood?" |
 | Interpolant | Velocity $v$ | "How fast is the sample moving?" |
+| Consistency | Clean data $x_0$ | "What's the original data?" |
+| OT Flow | Velocity $v$ | "How fast is the sample moving?" (OT-paired) |
 
 ### 2. Training Objective
 
@@ -263,6 +440,8 @@ class LightInterpolant(LightningModule):
 | **DDPM** | $\|\epsilon - \hat{\epsilon}\|^2$ | Uniform or fixed schedule |
 | **Score** | $\lambda(t) \|s - \hat{s}\|^2$ | Typically $\sigma_t^2$ weighting |
 | **Interpolant** | $\|v - \hat{v}\|^2$ | Uniform (no weighting) |
+| **Consistency** | $\|f_\theta(x_n) - f_{\theta^-}(x_{n-1})\|^2$ | Self-consistency |
+| **OT Flow** | $\|v - \hat{v}\|^2$ (OT-paired) | Uniform (OT improves pairing) |
 
 ### 3. Sampling Process
 
@@ -271,6 +450,8 @@ class LightInterpolant(LightningModule):
 | **VDM/DDPM** | Reverse diffusion | 250-1000 | Yes (ancestral) |
 | **Score-SDE** | Reverse SDE | 500-2000 | Yes (Langevin) |
 | **Interpolant** | ODE integration | 50-100 | No (deterministic) |
+| **Consistency** | Direct mapping | 1-10 | No (deterministic) |
+| **OT Flow** | ODE integration | 50-100 | No (deterministic) |
 
 ### 4. Noise Schedule
 
@@ -280,6 +461,8 @@ class LightInterpolant(LightningModule):
 | **DDPM** | $\beta(t)$ linear/cosine | ❌ Fixed |
 | **Score** | VP/VE-SDE parameters | Partially |
 | **Interpolant** | N/A | N/A |
+| **Consistency** | $\sigma(t)$ power-law | ❌ Fixed (but well-studied) |
+| **OT Flow** | N/A | N/A |
 
 ---
 
@@ -293,6 +476,8 @@ class LightInterpolant(LightningModule):
 | **Triple VDM** | ~3x slower | Three separate networks |
 | **DDPM** | ~1.0x | Comparable to VDM |
 | **Interpolant** | ~1.2x faster | Simpler loss, no schedule computation |
+| **Consistency** | ~0.9x | EMA updates add slight overhead |
+| **OT Flow** | ~0.7x | OT computation per batch adds overhead |
 
 ### Sampling Speed
 
@@ -301,6 +486,8 @@ class LightInterpolant(LightningModule):
 | **VDM** | 250-500 | Slow | Excellent |
 | **DDPM** | 250-1000 | Slow | Excellent |
 | **Interpolant** | 50-100 | **Fast** | Good-Excellent |
+| **Consistency** | 1-10 | **Very Fast** | Good-Excellent |
+| **OT Flow** | 50-100 | **Fast** | Excellent |
 
 ### Memory Usage
 
@@ -310,6 +497,8 @@ class LightInterpolant(LightningModule):
 | **Triple VDM** | ~3x (three networks) |
 | **DDPM** | ~1.0x |
 | **Interpolant** | ~1.0x |
+| **Consistency** | ~1.5x (EMA target network) |
+| **OT Flow** | ~1.2x (OT cost matrix) |
 
 ### Hyperparameter Sensitivity
 
@@ -318,6 +507,8 @@ class LightInterpolant(LightningModule):
 | **VDM** | Low (learned) | Medium | High |
 | **DDPM** | High | High | Medium |
 | **Interpolant** | **N/A** | Medium | Low |
+| **Consistency** | Medium ($\sigma_{\text{min}}, \sigma_{\text{max}}$) | Medium | Low |
+| **OT Flow** | **N/A** | Medium | Low (OT reg.) |
 
 ---
 
@@ -414,23 +605,57 @@ For the **stellar channel specifically**, consider:
 
 ---
 
+## Implemented Approaches (✅ Available)
+
+### Consistency Models (✅ Implemented)
+
+[Consistency Models](https://arxiv.org/abs/2303.01469) (Song et al., 2023) offer single-step or few-step sampling while maintaining diffusion-quality results. 
+
+**Status**: ✅ Implemented in `vdm/consistency_model.py`
+
+**Key features**:
+- Single-step or few-step sampling (1-10 steps)
+- Self-consistency training with EMA target network
+- Skip connection parameterization for boundary condition
+- Optional denoising pre-training for stability
+
+**Usage**:
+```python
+from vdm.consistency_model import LightConsistency
+model = LightConsistency(consistency_model=..., n_sampling_steps=1)
+samples = model.draw_samples(conditioning, batch_size=8)
+```
+
+### Optimal Transport Flow Matching (✅ Implemented)
+
+[Lipman et al. (2022)](https://arxiv.org/abs/2210.02747) show that using optimal transport interpolation (instead of linear) leads to straighter paths and better sample quality.
+
+**Status**: ✅ Implemented in `vdm/ot_flow_model.py`
+
+**Key features**:
+- OT-paired samples for straighter training paths
+- Choice of exact (EMD) or entropic (Sinkhorn) OT
+- Same fast ODE sampling as standard flow matching
+- Path straightness metrics for monitoring
+
+**Usage**:
+```python
+from vdm.ot_flow_model import LightOTFlow
+model = LightOTFlow(velocity_model=..., ot_method='exact')
+samples = model.draw_samples(conditioning, batch_size=8)
+```
+
+---
+
 ## Future Directions
 
-### Consistency Models
+### Consistency Distillation
 
-[Consistency Models](https://arxiv.org/abs/2303.01469) (Song et al., 2023) offer single-step or few-step sampling while maintaining diffusion-quality results. Key idea: train to map any point on the diffusion trajectory directly to the clean data.
+While we've implemented Consistency Training (CT), an alternative is **Consistency Distillation (CD)** which distills a pre-trained diffusion model into a consistency model. This could provide even better quality with the trained VDM as teacher.
 
-$$f_\theta(x_t, t) = x_0 \quad \forall t$$
+### Rectified Flow
 
-This could provide the quality of diffusion with the speed of flow matching.
-
-### Optimal Transport Flow Matching
-
-[Lipman et al. (2022)](https://arxiv.org/abs/2210.02747) show that using optimal transport interpolation (instead of linear) leads to straighter paths and better sample quality:
-
-$$x_t = \text{OT}(x_0, x_1, t)$$
-
-This is more expensive to train but may improve quality for our structured astronomical data.
+Recent work on rectified flows (Liu et al., 2022) shows that iteratively "straightening" flows by reflow can improve sample quality. This could complement our OT flow matching approach.
 
 ### Conditional Flow Matching
 
@@ -452,9 +677,9 @@ For our conditional generation task (DMO → Hydro), conditional flow matching p
 
 5. **Stochastic Interpolants**: Albergo, M. S., & Vanden-Eijnden, E. (2022). [Building Normalizing Flows with Stochastic Interpolants](https://arxiv.org/abs/2209.15571). ICLR 2023.
 
-### Related Work
-
 6. **Consistency Models**: Song, Y., Dhariwal, P., Chen, M., & Sutskever, I. (2023). [Consistency Models](https://arxiv.org/abs/2303.01469). ICML 2023.
+
+### Related Work
 
 7. **BaryonBridge**: Sadr, A., et al. (2024). Using flow matching for DMO → Hydro in cosmological simulations.
 
@@ -464,16 +689,17 @@ For our conditional generation task (DMO → Hydro), conditional flow matching p
 
 ## Summary Table
 
-| Aspect | VDM (Clean) | VDM (Triple) | DDPM | Interpolant |
-|--------|-------------|--------------|------|-------------|
-| **Quality** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
-| **Training Speed** | ⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
-| **Sampling Speed** | ⭐⭐ | ⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐⭐ |
-| **Simplicity** | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
-| **Flexibility** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ |
-| **Memory** | ⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
-| **Sparse Fields** | ⭐⭐⭐⭐ (focal) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
+| Aspect | VDM (Clean) | VDM (Triple) | DDPM | Interpolant | Consistency | OT Flow |
+|--------|-------------|--------------|------|-------------|-------------|---------|
+| **Quality** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| **Training Speed** | ⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
+| **Sampling Speed** | ⭐⭐ | ⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| **Simplicity** | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **Flexibility** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **Memory** | ⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
+| **Sparse Fields** | ⭐⭐⭐⭐ (focal) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
 
 ---
 
 *This document is part of the VDM-BIND project. For implementation details, see the respective model files in `vdm/`.*
+
