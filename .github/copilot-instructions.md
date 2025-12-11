@@ -219,6 +219,18 @@ sbatch scripts/run_train.sh
 python run_bind_unified.py --suite cv --sim_nums 0 --batch_size 2 --realizations 1
 ```
 
+## Checkpoint Formats
+
+Training scripts save checkpoints in two formats (both backward compatible):
+
+| Format | Pattern | Created by |
+|--------|---------|------------|
+| **New (files)** | `epoch-epoch=XXX-step=YYY.ckpt` | `epoch_checkpoint` |
+| **Legacy (dirs)** | `epoch=X-step=Y-val/metric=Z.ZZZ.ckpt` | `val_checkpoint` |
+| **Latest** | `latest-epoch=X-step=Y.ckpt` | `latest_checkpoint` |
+
+`ConfigLoader._state_initialization()` auto-detects the format and loads the appropriate checkpoint.
+
 ## Common Gotchas
 
 1. **Checkpoint conditioning channels**: Auto-detected from `conv_in.weight` shape. Don't manually override unless debugging.
@@ -232,6 +244,8 @@ python run_bind_unified.py --suite cv --sim_nums 0 --batch_size 2 --realizations
 5. **Periodic boundaries**: All halo extraction and pasting uses periodic boundary conditions.
 
 6. **Environment variables**: Override paths via `VDM_BIND_ROOT`, `TRAIN_DATA_ROOT`, etc. See `config.py`.
+
+7. **Checkpoint formats**: Two formats exist (see above). Both are auto-detected and loaded correctly.
 
 ## Simulation Suites
 

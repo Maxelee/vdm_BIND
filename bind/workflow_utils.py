@@ -239,20 +239,50 @@ class ConfigLoader:
                 print(f"  {key}: {getattr(self, key, None)}")
 
     def _state_initialization(self):
-        """Find the best checkpoint based on validation files."""
+        """
+        Find the best checkpoint, supporting multiple checkpoint formats:
+        
+        1. New format (epoch_checkpoint): epoch-epoch=XXX-step=YYY.ckpt (files)
+        2. Old format (val_checkpoint): epoch=X-step=Y-val/ dirs with elbo=-X.XXX.ckpt inside
+        3. Latest checkpoints: latest-epoch=X-step=Y.ckpt (files)
+        
+        Priority: epoch-epoch* files > val checkpoint dirs > latest files
+        """
         self.tb_log_path = f"{self.tb_logs}/{self.model_name}/version_{self.version}/"
         
-        # First try direct path
-        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch-epoch*')
-        
-        # If not found, try recursive search (handles nested version directories)
+        # Pattern 1: New epoch checkpoint files (epoch-epoch=XXX-step=YYY.ckpt)
+        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch-epoch*.ckpt')
         if not ckpts:
-            ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch-epoch*', recursive=True)
+            ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch-epoch*.ckpt', recursive=True)
+        
+        # Pattern 2: Old val checkpoint directories (epoch=X-step=Y-val/)
+        # These contain files like elbo=-5.514.ckpt or val_loss=0.123.ckpt
+        if not ckpts:
+            val_dirs = glob.glob(f'{self.tb_log_path}/checkpoints/epoch=*-val')
+            if not val_dirs:
+                val_dirs = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch=*-val', recursive=True)
+            
+            if val_dirs:
+                # Sort directories by epoch number
+                val_dirs.sort(key=self._natural_sort_key)
+                # Get the latest epoch directory
+                best_dir = val_dirs[-1]
+                # Find the .ckpt file inside
+                inner_ckpts = glob.glob(os.path.join(best_dir, '*.ckpt'))
+                if inner_ckpts:
+                    # If multiple files, sort and take best (by metric value if present)
+                    inner_ckpts.sort(key=self._natural_sort_key)
+                    ckpts = [inner_ckpts[0]]  # Take the best one
+        
+        # Pattern 3: Latest checkpoint files as fallback
+        if not ckpts:
+            ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/latest-*.ckpt')
+            if not ckpts:
+                ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/latest-*.ckpt', recursive=True)
         
         if ckpts:
             ckpts.sort(key=self._natural_sort_key)
             self.best_ckpt = ckpts[-1]
-            # self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
         else:
             self.best_ckpt = None
 

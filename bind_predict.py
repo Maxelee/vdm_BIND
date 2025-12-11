@@ -455,6 +455,11 @@ Examples:
                        help='Path to model config file (uses default if not specified)')
     parser.add_argument('--checkpoint', type=str, default=None,
                        help='Path to model checkpoint (uses best from config if not specified)')
+    parser.add_argument('--model_type', type=str, default=None,
+                       choices=['clean', 'triple', 'ddpm', 'interpolant'],
+                       help='Model type (auto-selects config if --config not specified). '
+                            'Options: clean (VDM 3-channel), triple (3 independent VDMs), '
+                            'ddpm (score_models), interpolant (flow matching)')
     
     # Simulation parameters
     parser.add_argument('--box_size', type=float, default=None,
@@ -521,23 +526,48 @@ Examples:
     # Step 4: Load model
     print("\n[4/5] Loading diffusion model...")
     
-    # Find default config if not specified
+    # Import config module
+    from config import PROJECT_ROOT
+    
+    # Find config based on model_type if not explicitly specified
     if args.config is None:
-        from config import PROJECT_ROOT
-        default_config = PROJECT_ROOT / 'configs' / 'clean_vdm_aggressive_stellar.ini'
-        if default_config.exists():
-            args.config = str(default_config)
-            print(f"Using default config: {args.config}")
+        config_map = {
+            'clean': 'clean_vdm_aggressive_stellar.ini',
+            'triple': 'clean_vdm_triple.ini',
+            'ddpm': 'ddpm.ini',
+            'interpolant': 'interpolant.ini',
+        }
+        
+        if args.model_type is not None:
+            config_name = config_map.get(args.model_type)
+            if config_name:
+                args.config = str(PROJECT_ROOT / 'configs' / config_name)
+                print(f"Using {args.model_type} config: {args.config}")
         else:
-            raise FileNotFoundError("No config specified and default config not found")
+            # Default to clean VDM
+            args.config = str(PROJECT_ROOT / 'configs' / 'clean_vdm_aggressive_stellar.ini')
+            print(f"Using default config: {args.config}")
+        
+        if not Path(args.config).exists():
+            raise FileNotFoundError(f"Config file not found: {args.config}")
     
     # Import BIND components
     from bind.workflow_utils import ConfigLoader, ModelManager, load_normalization_stats, sample
     
     config = ConfigLoader(args.config, verbose=args.verbose)
+    
+    # Detect model type for user feedback
+    model_type = ModelManager.detect_model_type(config, verbose=args.verbose)
+    print(f"Detected model type: {model_type}")
+    
     model, _ = ModelManager.initialize(config, verbose=args.verbose, skip_data_loading=True)
     model = model.to(args.device)
     model.eval()
+    
+    # Set sampling steps for DDPM/interpolant models
+    if hasattr(model, 'n_sampling_steps'):
+        model.n_sampling_steps = args.n_sampling_steps
+        print(f"Using {args.n_sampling_steps} sampling steps")
     
     # Load normalization stats
     norm_stats = load_normalization_stats()

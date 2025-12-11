@@ -96,11 +96,19 @@ def train(
         save_top_k=10
     )
     
+    # Checkpoint at every epoch (consistent format with DDPM/interpolant)
+    epoch_checkpoint = ModelCheckpoint(
+        filename="epoch-{epoch:03d}-{step}",
+        save_top_k=-1,  # Save all checkpoints
+        every_n_epochs=1,
+    )
+    
     # Build callbacks list
     callbacks_list = [
         LearningRateMonitor(),
         latest_checkpoint,
         val_checkpoint,
+        epoch_checkpoint,
     ]
     
     # Add early stopping if enabled
