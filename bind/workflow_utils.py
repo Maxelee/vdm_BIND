@@ -1199,8 +1199,23 @@ class ModelManager:
         if verbose:
             print(f"[ModelManager] Loading state dict into LightConsistency...")
         
-        # Load state dict
-        model.load_state_dict(state_dict)
+        # Load state dict with strict=False to handle target_model keys
+        # The checkpoint contains target_model (EMA copy used during training)
+        # For inference, we only need consistency_model - target_model will be ignored
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        
+        # Filter out expected "unexpected" keys (target_model.* keys are expected to be in checkpoint)
+        unexpected_filtered = [k for k in unexpected if not k.startswith('target_model.')]
+        
+        if verbose:
+            if unexpected:
+                n_target = len([k for k in unexpected if k.startswith('target_model.')])
+                print(f"[ModelManager] Skipped {n_target} target_model keys (EMA copy, not needed for inference)")
+            if unexpected_filtered:
+                print(f"[ModelManager] WARNING: {len(unexpected_filtered)} unexpected keys: {unexpected_filtered[:5]}...")
+            if missing:
+                print(f"[ModelManager] WARNING: {len(missing)} missing keys: {missing[:5]}...")
+        
         model = model.eval().to(device)
         
         if verbose:
