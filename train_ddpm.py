@@ -176,7 +176,10 @@ def train(
         strategy=strategy,
         max_epochs=max_epochs,
         limit_train_batches=limit_train_batches,
-        gradient_clip_val=1.0,
+        # NOTE: DSM loss produces large gradients (~500k norm) which is normal.
+        # Either disable clipping or use a high value. The original score_models
+        # package doesn't use gradient clipping at all.
+        gradient_clip_val=None,  # Disabled - DSM gradients are naturally well-behaved
         accumulate_grad_batches=accumulate_grad_batches,
         callbacks=callbacks_list,
         sync_batchnorm=True if num_devices > 1 else False,

@@ -241,11 +241,11 @@ class ConfigLoader:
     def _state_initialization(self):
         """Find the best checkpoint based on validation files."""
         self.tb_log_path = f"{self.tb_logs}/{self.model_name}/version_{self.version}/"
-        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch*')
+        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch-epoch*')
         if ckpts:
             ckpts.sort(key=self._natural_sort_key)
             self.best_ckpt = ckpts[-1]
-            self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
+            # self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
         else:
             self.best_ckpt = None
 
@@ -565,20 +565,19 @@ class ModelManager:
         Initialize a DDPM/score_models model (NCSNpp or DDPM architecture).
         
         These models use the score_models package and Denoising Score Matching loss.
+        Uses the DIRECT score_models approach for proper weight loading.
         """
         if verbose:
-            print("[ModelManager] Initializing DDPM/Score Model...")
+            print("[ModelManager] Initializing DDPM/Score Model (direct score_models approach)...")
             print(f"[ModelManager] Using seed: {config.seed}")
             print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
         
         seed_everything(config.seed)
         
-        # Import DDPM module
+        # Import score_models directly (NOT LightScoreModel wrapper)
         try:
-            from vdm.ddpm_model import LightScoreModel, SCORE_MODELS_AVAILABLE
-            if not SCORE_MODELS_AVAILABLE:
-                raise ImportError("score_models package not installed")
-            from score_models import NCSNpp, DDPM
+            from score_models import ScoreModel, NCSNpp, DDPM
+            SCORE_MODELS_AVAILABLE = True
         except ImportError as e:
             raise ImportError(f"DDPM model requires score_models package: {e}")
         
@@ -586,52 +585,32 @@ class ModelManager:
         if not config.best_ckpt or not os.path.exists(config.best_ckpt):
             raise ValueError(f"DDPM model requires a valid checkpoint. Got: {config.best_ckpt}")
         
-        checkpoint = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
         hparams = checkpoint.get('hyper_parameters', {})
         state_dict = checkpoint.get('state_dict', {})
         
         if verbose:
             print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
-            for k, v in list(hparams.items())[:20]:  # Limit output
+            for k, v in list(hparams.items())[:20]:
                 print(f"  {k}: {v}")
         
         # Extract model configuration from hparams
-        sde_type = hparams.get('sde_type', hparams.get('sde', 'vp'))
+        sde_type = hparams.get('sde_type', hparams.get('sde', 'vp')).lower()
         beta_min = hparams.get('beta_min', 0.1)
         beta_max = hparams.get('beta_max', 20.0)
         sigma_min = hparams.get('sigma_min', 0.01)
         sigma_max = hparams.get('sigma_max', 50.0)
-        learning_rate = hparams.get('learning_rate', 1e-4)
-        n_sampling_steps = hparams.get('n_sampling_steps', 250)
+        n_sampling_steps = hparams.get('n_sampling_steps', 1000)
         use_param_conditioning = hparams.get('use_param_conditioning', False)
         
-        # Try to detect architecture from checkpoint keys
-        # NCSNpp has specific layer names like 'all_modules', DDPM has 'down', 'up' blocks
-        architecture = 'ncsnpp'  # Default
-        if any('all_modules' in k for k in state_dict.keys()):
-            architecture = 'ncsnpp'
-        elif any('downs.' in k or 'ups.' in k for k in state_dict.keys()):
-            architecture = 'ddpm'
-        
-        # Auto-detect conditioning channels from model structure
-        # Look for NCSNpp's condition_input_channels or similar
+        # Auto-detect conditioning channels from config
         conditioning_channels = getattr(config, 'conditioning_channels', 1)
         large_scale_channels = getattr(config, 'large_scale_channels', 3)
         n_params = getattr(config, 'n_params', 35) if use_param_conditioning else 0
         
         # Total spatial conditioning = 1 (DM) + large_scale_channels
         total_spatial_cond = 1 + large_scale_channels
-        
-        if verbose:
-            print(f"[ModelManager] DDPM Model Configuration:")
-            print(f"  Architecture: {architecture}")
-            print(f"  SDE type: {sde_type}")
-            print(f"  Spatial conditioning channels: {total_spatial_cond}")
-            print(f"  Parameter conditioning: {use_param_conditioning} ({n_params} params)")
-            print(f"  Sampling steps: {n_sampling_steps}")
-        
-        # Create network based on detected architecture
-        # We need to match the exact architecture from training
         output_channels = 3  # [DM, Gas, Stars]
         
         # Build condition list based on what was used in training
@@ -640,98 +619,185 @@ class ModelManager:
         else:
             condition_types = ['input']
         
-        if architecture == 'ncsnpp':
-            # Get NCSNpp specific params from hparams or config
-            nf = hparams.get('nf', getattr(config, 'nf', 96))
-            ch_mult_str = hparams.get('ch_mult', getattr(config, 'ch_mult', '1,2,4,8'))
-            if isinstance(ch_mult_str, str):
-                ch_mult = tuple(map(int, ch_mult_str.split(',')))
-            else:
-                ch_mult = tuple(ch_mult_str) if hasattr(ch_mult_str, '__iter__') else (1, 2, 4, 8)
-            
-            net_kwargs = {
-                'channels': output_channels,
-                'dimensions': 2,
-                'nf': nf,
-                'ch_mult': ch_mult,
-                'attention': hparams.get('attention', True),
-                'condition': condition_types,
-                'condition_input_channels': total_spatial_cond,
-            }
-            if use_param_conditioning:
-                net_kwargs['condition_vector_channels'] = n_params
-            
-            net = NCSNpp(**net_kwargs)
-            
-        elif architecture == 'ddpm':
-            # DDPM architecture
-            nf = hparams.get('nf', getattr(config, 'nf', 96))
-            ch_mult_str = hparams.get('ch_mult', getattr(config, 'ch_mult', '1,2,4,8'))
-            if isinstance(ch_mult_str, str):
-                ch_mult = tuple(map(int, ch_mult_str.split(',')))
-            else:
-                ch_mult = tuple(ch_mult_str) if hasattr(ch_mult_str, '__iter__') else (1, 2, 4, 8)
-            
-            # DDPM with manual conditioning wrapper
-            from vdm.ddpm_model import ConditionedDDPMWrapper
-            
-            base_net = DDPM(
-                channels=output_channels + total_spatial_cond,
-                dimensions=2,
-                nf=nf,
-                ch_mult=ch_mult,
-            )
-            net = ConditionedDDPMWrapper(
-                net=base_net,
-                output_channels=output_channels,
-                conditioning_channels=total_spatial_cond,
-            )
+        # Get NCSNpp specific params from hparams or config
+        nf = hparams.get('nf', getattr(config, 'nf', 96))
+        ch_mult_str = hparams.get('ch_mult', getattr(config, 'ch_mult', '1,2,4,8'))
+        if isinstance(ch_mult_str, str):
+            ch_mult = tuple(map(int, ch_mult_str.split(',')))
         else:
-            raise ValueError(f"Unknown architecture: {architecture}")
+            ch_mult = tuple(ch_mult_str) if hasattr(ch_mult_str, '__iter__') else (1, 2, 4, 8)
         
-        # Create LightScoreModel
-        model = LightScoreModel(
-            model=net,
-            sde=sde_type,
-            beta_min=beta_min,
-            beta_max=beta_max,
-            sigma_min=sigma_min,
-            sigma_max=sigma_max,
-            learning_rate=learning_rate,
+        if verbose:
+            print(f"[ModelManager] DDPM Model Configuration:")
+            print(f"  SDE type: {sde_type}")
+            print(f"  nf: {nf}, ch_mult: {ch_mult}")
+            print(f"  Spatial conditioning channels: {total_spatial_cond}")
+            print(f"  Parameter conditioning: {use_param_conditioning} ({n_params} params)")
+            print(f"  Sampling steps: {n_sampling_steps}")
+        
+        # Create NCSNpp network with same architecture as training
+        net_kwargs = {
+            'channels': output_channels,
+            'dimensions': 2,
+            'nf': nf,
+            'ch_mult': ch_mult,
+            'attention': hparams.get('attention', True),
+            'condition': condition_types,
+            'condition_input_channels': total_spatial_cond,
+        }
+        if use_param_conditioning:
+            net_kwargs['condition_vector_channels'] = n_params
+        
+        net = NCSNpp(**net_kwargs)
+        
+        # Create ScoreModel directly using original score_models interface
+        # This is the KEY difference - use score_models.ScoreModel directly
+        if sde_type == 'vp':
+            score_model = ScoreModel(
+                model=net,
+                sde='vp',
+                beta_min=beta_min,
+                beta_max=beta_max,
+                T=1.0,
+                epsilon=1e-5,
+                device=device,
+            )
+        else:  # ve
+            score_model = ScoreModel(
+                model=net,
+                sde='ve',
+                sigma_min=sigma_min,
+                sigma_max=sigma_max,
+                T=1.0,
+                device=device,
+            )
+        
+        if verbose:
+            print(f"[ModelManager] Created ScoreModel with {sde_type.upper()}-SDE")
+            print(f"[ModelManager] Loading weights from Lightning checkpoint...")
+        
+        # Extract network weights from Lightning checkpoint
+        # Lightning saves as: 'score_model.model.xxx' or 'model.xxx'
+        model_state = {}
+        for k, v in state_dict.items():
+            if k.startswith('score_model.model.'):
+                # Strip 'score_model.model.' prefix to get raw NCSNpp keys
+                new_key = k.replace('score_model.model.', '')
+                model_state[new_key] = v
+            elif k.startswith('model.score_model.model.'):
+                # Alternative Lightning format
+                new_key = k.replace('model.score_model.model.', '')
+                model_state[new_key] = v
+            elif k.startswith('model.'):
+                # Fallback: 'model.xxx' -> 'xxx'
+                new_key = k.replace('model.', '')
+                model_state[new_key] = v
+        
+        if len(model_state) == 0:
+            raise ValueError(
+                f"Could not extract model weights from checkpoint. "
+                f"State dict keys: {list(state_dict.keys())[:10]}..."
+            )
+        
+        # Load weights into the NCSNpp network
+        missing, unexpected = score_model.model.load_state_dict(model_state, strict=False)
+        
+        if verbose:
+            print(f"[ModelManager] Loaded {len(model_state)} weight tensors")
+            if missing:
+                print(f"[ModelManager] Missing keys: {missing[:5]}..." if len(missing) > 5 else f"[ModelManager] Missing keys: {missing}")
+            if unexpected:
+                print(f"[ModelManager] Unexpected keys: {unexpected[:5]}..." if len(unexpected) > 5 else f"[ModelManager] Unexpected keys: {unexpected}")
+        
+        score_model.model.eval()
+        score_model.model.to(device)
+        
+        # Wrap in a simple class that provides BIND-compatible interface
+        class DDPMModelWrapper:
+            """Wrapper that provides BIND-compatible interface for score_models.ScoreModel."""
+            
+            def __init__(self, score_model, n_sampling_steps, use_param_conditioning, hparams):
+                self.score_model = score_model
+                self.n_sampling_steps = n_sampling_steps
+                self.use_param_conditioning = use_param_conditioning
+                # Store hparams as namespace for compatibility
+                self.hparams = type('HParams', (), hparams)()
+                self.hparams.n_sampling_steps = n_sampling_steps
+                self._device = device
+            
+            def to(self, device):
+                """Move model to device."""
+                self._device = device
+                self.score_model.model.to(device)
+                return self
+            
+            def eval(self):
+                """Set model to eval mode."""
+                self.score_model.model.eval()
+                return self
+            
+            def train(self, mode=True):
+                """Set model to train mode."""
+                self.score_model.model.train(mode)
+                return self
+            
+            def parameters(self):
+                """Return model parameters."""
+                return self.score_model.model.parameters()
+            
+            def draw_samples(
+                self,
+                conditioning,
+                batch_size,
+                n_sampling_steps=None,
+                param_conditioning=None,
+                verbose=False,
+            ):
+                """
+                BIND-compatible sampling interface.
+                
+                Args:
+                    conditioning: Spatial conditioning tensor (B, C_cond, H, W)
+                    batch_size: Number of samples to generate
+                    n_sampling_steps: Sampling steps (default: self.n_sampling_steps)
+                    param_conditioning: Optional parameter conditioning (B, N_params)
+                    verbose: Show progress
+                
+                Returns:
+                    samples: Generated samples (B, 3, H, W)
+                """
+                B, C_cond, H, W = conditioning.shape
+                steps = n_sampling_steps or self.n_sampling_steps
+                
+                # Build condition list for score_models.sample()
+                # Format: [spatial_cond, (optional) vector_cond]
+                condition_list = [conditioning.to(self._device)]
+                if param_conditioning is not None:
+                    condition_list.append(param_conditioning.to(self._device))
+                
+                # Generate samples using original score_models interface
+                with torch.no_grad():
+                    samples = self.score_model.sample(
+                        shape=[batch_size, 3, H, W],
+                        steps=steps,
+                        condition=condition_list,
+                    )
+                
+                return samples
+        
+        # Create wrapped model
+        model = DDPMModelWrapper(
+            score_model=score_model,
             n_sampling_steps=n_sampling_steps,
             use_param_conditioning=use_param_conditioning,
+            hparams=dict(hparams),
         )
         
         if verbose:
-            print(f"[ModelManager] Loading state dict into DDPM model...")
-        
-        # Check if EMA weights are available (preferred for inference)
-        ema_state = checkpoint.get('ema_callback_state', {})
-        ema_weights = ema_state.get('ema_weights', None)
-        
-        if ema_weights is not None and len(ema_weights) > 0:
-            if verbose:
-                print(f"[ModelManager] Found EMA weights ({len(ema_weights)} tensors), using for inference...")
-            # Load training weights first, then override with EMA where available
-            model.load_state_dict(state_dict, strict=False)
-            # Now load EMA weights over the model parameters
-            with torch.no_grad():
-                for name, param in model.named_parameters():
-                    if name in ema_weights:
-                        param.data.copy_(ema_weights[name])
-            if verbose:
-                print(f"[ModelManager] ✓ EMA weights loaded successfully")
-        else:
-            if verbose:
-                print(f"[ModelManager] No EMA weights found, using training weights")
-            model.load_state_dict(state_dict, strict=False)
-        
-        model = model.eval()
-        
-        if verbose:
-            n_params_model = sum(p.numel() for p in model.parameters())
-            print(f"[ModelManager] DDPM model loaded successfully.")
-            print(f"[ModelManager] Model parameters: {n_params_model:,}")
+            n_params_total = sum(p.numel() for p in score_model.model.parameters())
+            print(f"[ModelManager] ✓ DDPM model loaded successfully")
+            print(f"[ModelManager] Model parameters: {n_params_total:,}")
+            print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
         
         # Load data if requested
         if skip_data_loading:
