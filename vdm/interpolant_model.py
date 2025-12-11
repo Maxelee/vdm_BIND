@@ -291,23 +291,26 @@ class VelocityNetWrapper(nn.Module):
         Returns:
             v: Predicted velocity (B, C_out, H, W)
         """
-        # Concatenate x and conditioning for input
-        if conditioning is not None:
-            net_input = torch.cat([x, conditioning], dim=1)
-        else:
-            # Pad with zeros if no conditioning provided
-            B, C, H, W = x.shape
-            zeros = torch.zeros(B, self.conditioning_channels, H, W, device=x.device, dtype=x.dtype)
-            net_input = torch.cat([x, zeros], dim=1)
-        
-        # Call network with time embedding and parameter conditioning
-        # The UNet expects: forward(z, g_t, conditioning=None, param_conditioning=None)
-        # - z: input tensor (net_input here)
-        # - g_t: time (we use t directly, UNet will rescale)
-        # - conditioning: spatial conditioning (already concatenated to net_input)
+        # UNetVDM.forward expects: forward(z, g_t, conditioning, param_conditioning)
+        # - z: target tensor (x here, which is x_t in interpolant notation)
+        # - g_t: time (we use t directly)
+        # - conditioning: spatial conditioning (DM + large-scale maps)
         # - param_conditioning: cosmological parameters for FiLM conditioning
-        output = self.net(net_input, t, conditioning=None, param_conditioning=param_conditioning)
+        # 
+        # UNetVDM internally handles:
+        # 1. Fourier features on conditioning (if enabled)
+        # 2. Concatenation of z with conditioning (or cross-attention)
+        # So we pass them separately - do NOT concatenate here!
+        output = self.net(x, t, conditioning=conditioning, param_conditioning=param_conditioning)
         
+        # UNetVDM may return a tuple when param_prediction or auxiliary_mask is enabled:
+        # - (prediction,) or prediction  -- just the velocity/noise prediction
+        # - (prediction, predicted_params) -- with param prediction
+        # - (prediction, mask_logits) -- with auxiliary mask
+        # - (prediction, predicted_params, mask_logits) -- with both
+        # We only need the velocity prediction (first element)
+        if isinstance(output, tuple):
+            return output[0]
         return output
 
 
@@ -493,7 +496,8 @@ class LightInterpolant(LightningModule):
         
         Args:
             shape: Shape of samples to generate (B, C, H, W)
-            conditioning: Spatial conditioning tensor
+            conditioning: Spatial conditioning tensor (B, C_cond, H, W)
+                          First channel is DM condition, used for dm_copy mode
             param_conditioning: Parameter conditioning (B, N_params) - cosmological params
             steps: Number of sampling steps
             verbose: Show progress bar
@@ -506,10 +510,19 @@ class LightInterpolant(LightningModule):
         
         # Initialize x0 based on mode
         device = conditioning.device if conditioning is not None else self.device
+        B, C_out, H, W = shape
         
         if self.x0_mode == "noise":
             x0 = torch.randn(shape, device=device)
-        else:
+        elif self.x0_mode == "dm_copy":
+            # Copy DM condition (first channel of conditioning) to all output channels
+            # This matches training where x0 = dm_condition.expand(-1, C, -1, -1)
+            if conditioning is not None:
+                dm_condition = conditioning[:, :1]  # (B, 1, H, W)
+                x0 = dm_condition.expand(-1, C_out, -1, -1).clone()
+            else:
+                x0 = torch.zeros(shape, device=device)
+        else:  # zeros
             x0 = torch.zeros(shape, device=device)
         
         # Generate samples (pass param_conditioning for FiLM modulation)

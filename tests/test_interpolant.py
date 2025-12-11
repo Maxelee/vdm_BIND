@@ -198,6 +198,40 @@ class TestLightInterpolant:
             )
         
         assert samples.shape == (batch_size, 3, 32, 32)
+    
+    def test_dm_copy_mode_uses_conditioning(self):
+        """Test that dm_copy mode correctly initializes x0 from DM condition during sampling."""
+        from vdm.interpolant_model import LightInterpolant
+        
+        class IdentityVelocity(torch.nn.Module):
+            """Returns zero velocity, so output equals input."""
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
+                return torch.zeros_like(x)
+        
+        model = LightInterpolant(
+            velocity_model=IdentityVelocity(),
+            n_sampling_steps=5,
+            x0_mode='dm_copy',
+        )
+        model.eval()
+        
+        batch_size = 2
+        # Create conditioning where first channel has distinct values
+        dm_condition = torch.ones(batch_size, 1, 32, 32) * 5.0  # DM = 5.0
+        large_scale = torch.randn(batch_size, 3, 32, 32)  # Random large-scale
+        conditioning = torch.cat([dm_condition, large_scale], dim=1)  # (B, 4, H, W)
+        
+        with torch.no_grad():
+            samples = model.sample(
+                shape=(batch_size, 3, 32, 32),
+                conditioning=conditioning,
+            )
+        
+        # With zero velocity, output should equal x0 = dm_condition expanded to 3 channels
+        # So all output channels should be ~5.0
+        assert samples.shape == (batch_size, 3, 32, 32)
+        assert torch.allclose(samples, torch.ones_like(samples) * 5.0), \
+            f"Expected samples to be 5.0 (dm_copy), got mean={samples.mean():.4f}"
 
 
 class TestVelocityNetWrapper:
@@ -207,13 +241,16 @@ class TestVelocityNetWrapper:
         """Test forward pass with conditioning."""
         from vdm.interpolant_model import VelocityNetWrapper
         
-        # Simple mock network that matches UNet signature
+        # Mock network that matches UNetVDM signature
+        # UNetVDM receives x and conditioning separately and handles concatenation internally
         class MockNet(torch.nn.Module):
             def __init__(self):
                 super().__init__()
-                self.conv = torch.nn.Conv2d(7, 3, 1)  # 3 + 4 -> 3
+                self.conv = torch.nn.Conv2d(3, 3, 1)  # Only processes x (3 channels)
             
             def forward(self, x, t, conditioning=None, param_conditioning=None):
+                # UNetVDM internally concatenates and processes, but for mock
+                # we just return a transformed x of the same shape
                 return self.conv(x)
         
         wrapper = VelocityNetWrapper(
@@ -232,15 +269,14 @@ class TestVelocityNetWrapper:
         assert output.shape == (batch_size, 3, 32, 32)
     
     def test_forward_without_conditioning(self):
-        """Test forward pass without conditioning (zeros padded)."""
+        """Test forward pass without conditioning."""
         from vdm.interpolant_model import VelocityNetWrapper
         
-        # Note: When no conditioning is provided, the wrapper pads with zeros
-        # So the network still receives 7 channels (3 + 4)
+        # Mock network that handles conditioning=None
         class MockNet(torch.nn.Module):
             def __init__(self):
                 super().__init__()
-                self.conv = torch.nn.Conv2d(7, 3, 1)  # Still expects 7 channels
+                self.conv = torch.nn.Conv2d(3, 3, 1)  # Only processes x (3 channels)
             
             def forward(self, x, t, conditioning=None, param_conditioning=None):
                 return self.conv(x)
@@ -255,9 +291,41 @@ class TestVelocityNetWrapper:
         x = torch.randn(batch_size, 3, 32, 32)
         t = torch.rand(batch_size)
         
-        # Should work because wrapper pads with zeros
+        # Should work - wrapper passes conditioning=None to network
         output = wrapper(t, x, conditioning=None)
         
+        assert output.shape == (batch_size, 3, 32, 32)
+    
+    def test_forward_handles_tuple_output(self):
+        """Test that wrapper correctly handles tuple output from UNetVDM (param_prediction)."""
+        from vdm.interpolant_model import VelocityNetWrapper
+        
+        # Mock network that returns tuple (like UNetVDM with param_prediction=True)
+        class MockNetWithParams(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = torch.nn.Conv2d(3, 3, 1)
+            
+            def forward(self, x, t, conditioning=None, param_conditioning=None):
+                prediction = self.conv(x)
+                predicted_params = torch.randn(x.shape[0], 35)  # 35 params
+                return prediction, predicted_params  # Returns tuple!
+        
+        wrapper = VelocityNetWrapper(
+            net=MockNetWithParams(),
+            output_channels=3,
+            conditioning_channels=4,
+        )
+        
+        batch_size = 2
+        x = torch.randn(batch_size, 3, 32, 32)
+        t = torch.rand(batch_size)
+        conditioning = torch.randn(batch_size, 4, 32, 32)
+        
+        # Should extract only the prediction tensor from the tuple
+        output = wrapper(t, x, conditioning)
+        
+        assert isinstance(output, torch.Tensor), "Output should be tensor, not tuple"
         assert output.shape == (batch_size, 3, 32, 32)
 
 

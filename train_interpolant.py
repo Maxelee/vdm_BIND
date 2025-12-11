@@ -258,7 +258,24 @@ def main():
     sigma = get_float('sigma', 0.0)
     
     # Parameter conditioning (cosmological parameters via FiLM)
-    use_param_conditioning = get_bool('use_param_conditioning', True)
+    param_norm_path = get_str('param_norm_path', '/mnt/home/mlee1/Sims/IllustrisTNG_extras/L50n512/SB35/SB35_param_minmax.csv')
+    
+    # Load parameter normalization
+    if param_norm_path is None or param_norm_path.lower() == 'none':
+        use_param_conditioning = False
+        min_vals = None
+        max_vals = None
+        Nparams = 0
+    else:
+        use_param_conditioning = True
+        import pandas as pd
+        if not os.path.exists(param_norm_path):
+            raise FileNotFoundError(f"Parameter norm path not found: {param_norm_path}")
+        minmax_df = pd.read_csv(param_norm_path)
+        min_vals = np.array(minmax_df['MinVal'])
+        max_vals = np.array(minmax_df['MaxVal'])
+        Nparams = len(min_vals)
+        print(f"  Loaded {Nparams} parameter bounds from {param_norm_path}")
     
     # EMA parameters
     enable_ema = get_bool('enable_ema', True)
@@ -305,7 +322,7 @@ def main():
     print(f"  x0 mode: {x0_mode}")
     print(f"  Stochastic: {use_stochastic_interpolant} (sigma={sigma})")
     print(f"  Sampling steps: {n_sampling_steps}")
-    print(f"  Param conditioning: {use_param_conditioning}")
+    print(f"  Param conditioning: {use_param_conditioning} ({Nparams} params)")
     
     print(f"\n📈 TRAINING:")
     print(f"  Batch size: {batch_size}")
@@ -316,26 +333,28 @@ def main():
     print(f"  LR scheduler: {lr_scheduler}")
     print(f"  EMA: {enable_ema} (decay={ema_decay})")
     
-    # Import UNet
-    from vdm.networks_clean import UNet
+    # Import UNetVDM
+    from vdm.networks_clean import UNetVDM
     
     # Create UNet for velocity prediction
-    # Input: x_t (3 channels) + conditioning (total_conditioning_channels)
-    # Output: velocity (3 channels)
-    input_channels = 3 + total_conditioning_channels
+    # The UNetVDM takes input_channels (target) and conditioning_channels separately
+    # It concatenates them internally
     output_channels = 3
     
-    unet = UNet(
-        in_channels=input_channels,
-        out_channels=output_channels,
+    unet = UNetVDM(
+        input_channels=output_channels,  # Target channels (3)
+        conditioning_channels=conditioning_channels,  # DM channels (1)
+        large_scale_channels=large_scale_channels,  # Large-scale context (3)
         embedding_dim=embedding_dim,
         n_blocks=n_blocks,
         norm_groups=norm_groups,
         n_attention_heads=n_attention_heads,
         use_fourier_features=use_fourier_features,
-        fourier_legacy=fourier_legacy,
+        legacy_fourier=fourier_legacy,
         add_attention=add_attention,
         use_param_conditioning=use_param_conditioning,
+        param_min=min_vals,
+        param_max=max_vals,
     )
     
     # Wrap UNet for velocity prediction
@@ -369,10 +388,9 @@ def main():
     print(f"\n📦 Loading data from {data_root}...")
     datamodule = get_astro_data(
         dataset=dataset,
+        data_root=data_root,
         batch_size=batch_size,
         num_workers=num_workers,
-        data_root=data_root,
-        cropsize=cropsize,
     )
     
     # Train

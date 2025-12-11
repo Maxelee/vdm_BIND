@@ -241,7 +241,14 @@ class ConfigLoader:
     def _state_initialization(self):
         """Find the best checkpoint based on validation files."""
         self.tb_log_path = f"{self.tb_logs}/{self.model_name}/version_{self.version}/"
+        
+        # First try direct path
         ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch-epoch*')
+        
+        # If not found, try recursive search (handles nested version directories)
+        if not ckpts:
+            ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch-epoch*', recursive=True)
+        
         if ckpts:
             ckpts.sort(key=self._natural_sort_key)
             self.best_ckpt = ckpts[-1]
@@ -901,21 +908,38 @@ class ModelManager:
             print(f"  Conditioning channels: {total_conditioning_channels}")
             print(f"  Param conditioning: {use_param_conditioning}")
         
-        # Create UNet
-        from vdm.networks_clean import UNet
+        # Create UNetVDM - same architecture as train_interpolant.py
+        # UNetVDM takes input_channels (target) and conditioning_channels separately
+        # It concatenates them internally and handles Fourier features
+        from vdm.networks_clean import UNetVDM
         
-        input_channels = output_channels + total_conditioning_channels
-        unet = UNet(
-            in_channels=input_channels,
-            out_channels=output_channels,
+        # Load param normalization if using param conditioning
+        param_min = None
+        param_max = None
+        if use_param_conditioning:
+            param_norm_path = hparams.get('param_norm_path', getattr(config, 'param_norm_path', None))
+            if param_norm_path and os.path.exists(param_norm_path):
+                import pandas as pd
+                minmax_df = pd.read_csv(param_norm_path)
+                param_min = np.array(minmax_df['MinVal'])
+                param_max = np.array(minmax_df['MaxVal'])
+                if verbose:
+                    print(f"[ModelManager] Loaded {len(param_min)} param bounds from {param_norm_path}")
+        
+        unet = UNetVDM(
+            input_channels=output_channels,  # Target channels (3)
+            conditioning_channels=conditioning_channels,  # DM channels (1)
+            large_scale_channels=large_scale_channels,  # Large-scale context (3)
             embedding_dim=embedding_dim,
             n_blocks=n_blocks,
             norm_groups=norm_groups,
             n_attention_heads=n_attention_heads,
             use_fourier_features=use_fourier_features,
-            fourier_legacy=fourier_legacy,
+            legacy_fourier=fourier_legacy,
             add_attention=add_attention,
             use_param_conditioning=use_param_conditioning,
+            param_min=param_min,
+            param_max=param_max,
         )
         
         # Wrap for velocity prediction
