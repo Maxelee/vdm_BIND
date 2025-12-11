@@ -131,9 +131,23 @@ If you use these analyses, please cite the BIND paper:
 [Citation information to be added upon publication]
 ```
 
+## Model Types
+
+These notebooks support multiple model types for the DMO → Hydro mapping:
+
+| Model Type | Description | Config Example |
+|------------|-------------|----------------|
+| VDM (clean) | Variational Diffusion Model (3-channel) | `clean_vdm_aggressive_stellar.ini` |
+| VDM (triple) | Three independent 1-channel VDMs | `clean_vdm_triple.ini` |
+| DDPM | Score-based diffusion (NCSNpp) | `ddpm.ini` |
+| **Interpolant** | Flow matching / stochastic interpolants | `interpolant.ini` |
+
+The interpolant models learn a velocity field to transport from x_0 to x_1, using flow matching loss instead of diffusion objectives. They typically require fewer sampling steps (20-50 vs 250-1000) and have simpler loss functions.
+
 ## Notes
 
 - All plots use consistent styling defined in `paper_utils.py`
 - LaTeX rendering is enabled for mathematical expressions in plots
 - Figure sizes are optimized for typical journal column widths
 - Color schemes are colorblind-friendly where possible
+

@@ -1,14 +1,227 @@
 """
-PyTorch Lightning callbacks for validation plotting, FID tracking, and gradient monitoring.
+PyTorch Lightning callbacks for validation plotting, FID tracking, gradient monitoring, and EMA.
 """
 
 import os
+import copy
 import torch
 import numpy as np
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from vdm.validation_plots import ValidationPlotter
 from vdm.metrics import compute_fid, compute_channel_wise_fid
+
+
+# ============================================================================
+# EMA (Exponential Moving Average) Callback
+# ============================================================================
+
+class EMACallback(Callback):
+    """
+    Exponential Moving Average (EMA) callback for PyTorch Lightning.
+    
+    Maintains a shadow copy of model weights that is updated with an exponential
+    moving average of the training weights. EMA weights typically produce better
+    samples in diffusion models.
+    
+    The EMA update rule is:
+        ema_weight = decay * ema_weight + (1 - decay) * model_weight
+    
+    During validation/inference, the EMA weights are swapped in temporarily.
+    The original weights are restored after validation.
+    
+    Args:
+        decay: EMA decay factor (default: 0.9999). Higher = slower updates.
+               Common values: 0.999, 0.9999, 0.99999
+        update_after_step: Number of steps before starting EMA updates (warmup).
+                          Allows model to train normally at start.
+        update_every: Update EMA weights every N steps (default: 1).
+        use_ema_for_validation: If True, use EMA weights for validation (default: True).
+        save_ema_weights: If True, save EMA weights in checkpoints (default: True).
+    
+    Example:
+        ```python
+        ema_callback = EMACallback(decay=0.9999, update_after_step=1000)
+        trainer = Trainer(callbacks=[ema_callback])
+        ```
+    
+    To access EMA model for inference:
+        ```python
+        # During training (callback has reference)
+        ema_model = ema_callback.ema_model
+        
+        # Or swap weights manually
+        ema_callback.swap_weights(pl_module)  # Now pl_module has EMA weights
+        # ... do inference ...
+        ema_callback.swap_weights(pl_module)  # Restore original weights
+        ```
+    """
+    
+    def __init__(
+        self,
+        decay: float = 0.9999,
+        update_after_step: int = 0,
+        update_every: int = 1,
+        use_ema_for_validation: bool = True,
+        save_ema_weights: bool = True,
+    ):
+        super().__init__()
+        self.decay = decay
+        self.update_after_step = update_after_step
+        self.update_every = update_every
+        self.use_ema_for_validation = use_ema_for_validation
+        self.save_ema_weights = save_ema_weights
+        
+        # Shadow weights (will be initialized on first training step)
+        self.ema_weights: Optional[Dict[str, torch.Tensor]] = None
+        self.original_weights: Optional[Dict[str, torch.Tensor]] = None
+        self.num_updates: int = 0
+        self._weights_swapped: bool = False
+        
+        print(f"\n{'='*60}")
+        print(f"EMA Callback Initialized")
+        print(f"{'='*60}")
+        print(f"  Decay: {decay}")
+        print(f"  Update after step: {update_after_step}")
+        print(f"  Update every: {update_every} steps")
+        print(f"  Use EMA for validation: {use_ema_for_validation}")
+        print(f"  Save EMA weights: {save_ema_weights}")
+        print(f"{'='*60}\n")
+    
+    def _get_decay(self, step: int) -> float:
+        """
+        Optionally implement decay warmup. Currently returns fixed decay.
+        Could be extended to use: decay * (1 - exp(-step / decay_warmup_steps))
+        """
+        return self.decay
+    
+    def _init_ema_weights(self, pl_module) -> None:
+        """Initialize EMA weights as a copy of model weights."""
+        self.ema_weights = {}
+        for name, param in pl_module.named_parameters():
+            if param.requires_grad:
+                self.ema_weights[name] = param.data.clone().detach()
+        print(f"✓ EMA: Initialized {len(self.ema_weights)} parameter tensors")
+    
+    @torch.no_grad()
+    def _update_ema_weights(self, pl_module, step: int) -> None:
+        """Update EMA weights with current model weights."""
+        if self.ema_weights is None:
+            return
+        
+        decay = self._get_decay(step)
+        
+        for name, param in pl_module.named_parameters():
+            if name in self.ema_weights and param.requires_grad:
+                # EMA update: ema = decay * ema + (1 - decay) * current
+                self.ema_weights[name].mul_(decay).add_(param.data, alpha=1 - decay)
+        
+        self.num_updates += 1
+    
+    @torch.no_grad()
+    def swap_weights(self, pl_module) -> None:
+        """Swap model weights with EMA weights."""
+        if self.ema_weights is None:
+            return
+        
+        for name, param in pl_module.named_parameters():
+            if name in self.ema_weights and param.requires_grad:
+                # Swap: temp = model, model = ema, ema = temp
+                temp = param.data.clone()
+                param.data.copy_(self.ema_weights[name])
+                self.ema_weights[name].copy_(temp)
+        
+        self._weights_swapped = not self._weights_swapped
+    
+    def on_train_start(self, trainer, pl_module) -> None:
+        """Initialize EMA weights at the start of training."""
+        if self.ema_weights is None:
+            self._init_ema_weights(pl_module)
+    
+    def on_train_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx
+    ) -> None:
+        """Update EMA weights after each training batch."""
+        step = trainer.global_step
+        
+        # Skip warmup period
+        if step < self.update_after_step:
+            return
+        
+        # Update every N steps
+        if step % self.update_every != 0:
+            return
+        
+        # Initialize if needed (e.g., when resuming)
+        if self.ema_weights is None:
+            self._init_ema_weights(pl_module)
+        
+        self._update_ema_weights(pl_module, step)
+        
+        # Log EMA stats occasionally
+        if step % 1000 == 0 and step > 0:
+            trainer.logger.log_metrics({
+                'ema/num_updates': self.num_updates,
+                'ema/decay': self._get_decay(step),
+            }, step=step)
+    
+    def on_validation_start(self, trainer, pl_module) -> None:
+        """Swap to EMA weights before validation."""
+        if self.use_ema_for_validation and self.ema_weights is not None:
+            self.swap_weights(pl_module)
+    
+    def on_validation_end(self, trainer, pl_module) -> None:
+        """Restore original weights after validation."""
+        if self._weights_swapped:
+            self.swap_weights(pl_module)
+    
+    def on_test_start(self, trainer, pl_module) -> None:
+        """Swap to EMA weights before testing."""
+        if self.ema_weights is not None:
+            self.swap_weights(pl_module)
+    
+    def on_test_end(self, trainer, pl_module) -> None:
+        """Restore original weights after testing."""
+        if self._weights_swapped:
+            self.swap_weights(pl_module)
+    
+    def state_dict(self) -> Dict[str, Any]:
+        """Return state dict for checkpointing."""
+        return {
+            'ema_weights': self.ema_weights,
+            'num_updates': self.num_updates,
+            'decay': self.decay,
+        }
+    
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        """Load state dict from checkpoint."""
+        self.ema_weights = state_dict.get('ema_weights')
+        self.num_updates = state_dict.get('num_updates', 0)
+        # Note: decay is set at init, but could be updated here if needed
+        if self.ema_weights is not None:
+            print(f"✓ EMA: Loaded {len(self.ema_weights)} parameter tensors "
+                  f"({self.num_updates} updates)")
+    
+    def on_save_checkpoint(
+        self, trainer, pl_module, checkpoint: Dict[str, Any]
+    ) -> None:
+        """Save EMA state in checkpoint."""
+        if self.save_ema_weights and self.ema_weights is not None:
+            checkpoint['ema_callback_state'] = self.state_dict()
+    
+    def on_load_checkpoint(
+        self, trainer, pl_module, checkpoint: Dict[str, Any]
+    ) -> None:
+        """Load EMA state from checkpoint."""
+        if 'ema_callback_state' in checkpoint:
+            self.load_state_dict(checkpoint['ema_callback_state'])
+    
+    def get_ema_model_state_dict(self) -> Optional[Dict[str, torch.Tensor]]:
+        """
+        Get EMA weights as a state dict (for saving/loading separately).
+        Returns None if EMA hasn't been initialized.
+        """
+        return self.ema_weights
 
 
 class ValidationPlotCallback(Callback):

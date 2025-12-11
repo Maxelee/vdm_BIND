@@ -97,15 +97,23 @@ class ConfigLoader:
         int_params = {'seed', 'cropsize', 'batch_size', 'num_workers', 'embedding_dim',
                       'norm_groups', 'n_blocks', 'n_attention_heads', 'version', 'ndim', 
                       'conditioning_channels', 'large_scale_channels', 'field_weight_warmup_steps',
-                      'cross_attention_heads', 'cross_attention_chunk_size', 'cross_attn_cond_downsample_factor'}
+                      'cross_attention_heads', 'cross_attention_chunk_size', 'cross_attn_cond_downsample_factor',
+                      # DDPM/score_models parameters
+                      'n_params', 'nf', 'num_res_blocks', 'n_sampling_steps', 'accumulate_grad_batches',
+                      'ema_update_after_step', 'ema_update_every'}
         float_params = {'gamma_min', 'gamma_max', 'learning_rate', 'mass_conservation_weight',
                         'sparsity_threshold', 'sparse_loss_weight', 'focal_alpha', 'focal_gamma',
-                        'param_prediction_weight', 'cross_attention_dropout'}
+                        'param_prediction_weight', 'cross_attention_dropout',
+                        # DDPM/score_models parameters
+                        'beta_min', 'beta_max', 'sigma_min', 'sigma_max', 'ema_decay', 'dropout'}
         bool_params = {'use_large_scale', 'use_fourier_features', 'fourier_legacy', 'legacy_fourier',
                        'add_attention', 'use_progressive_field_weighting', 'use_mass_conservation',
                        'use_sparsity_aware_loss', 'use_focal_loss', 'use_param_prediction', 
                        'use_auxiliary_mask', 'antithetic_time_sampling', 'use_cross_attention',
-                       'use_chunked_cross_attention', 'downsample_cross_attn_cond'}
+                       'use_chunked_cross_attention', 'downsample_cross_attn_cond',
+                       # DDPM/score_models parameters
+                       'use_param_conditioning', 'attention', 'enable_ema', 'enable_early_stopping',
+                       'enable_gradient_monitoring'}
         
         # Assign attributes with correct types
         for key, value in params.items():
@@ -233,11 +241,18 @@ class ConfigLoader:
     def _state_initialization(self):
         """Find the best checkpoint based on validation files."""
         self.tb_log_path = f"{self.tb_logs}/{self.model_name}/version_{self.version}/"
-        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch*')
+        
+        # First try direct path
+        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch-epoch*')
+        
+        # If not found, try recursive search (handles nested version directories)
+        if not ckpts:
+            ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch-epoch*', recursive=True)
+        
         if ckpts:
             ckpts.sort(key=self._natural_sort_key)
             self.best_ckpt = ckpts[-1]
-            self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
+            # self.best_ckpt = glob.glob(self.best_ckpt + '/*.ckpt')[0]
         else:
             self.best_ckpt = None
 
@@ -258,33 +273,50 @@ class ConfigLoader:
 
 class ModelManager:
     """
-    Model manager supporting both 'clean' (3-channel) and 'triple' (3 separate 1-channel) models.
+    Model manager supporting multiple model types:
     
     Model Types:
     - clean: Single 3-channel model (LightCleanVDM)
     - triple: Three independent 1-channel models (LightTripleVDM)
+    - ddpm: Score-based diffusion model (score_models package)
+    - interpolant: Flow matching / stochastic interpolant (LightInterpolant)
     
     The model type is auto-detected from:
-    1. config.model_name containing 'triple'
-    2. Checkpoint state_dict having triple model structure (hydro_dm_model, gas_model, stars_model)
+    1. config.model_name containing keywords
+    2. Checkpoint state_dict structure
     """
     
     @staticmethod
     def detect_model_type(config, verbose=False):
         """
-        Detect whether the model is 'clean' (3-channel) or 'triple' (3 separate models).
+        Detect model type from config and/or checkpoint.
         
         Detection order:
-        1. Check config.model_name for 'triple'
-        2. Check checkpoint state_dict for triple model keys
-        3. Default to 'clean'
+        1. Check config.model_name for 'interpolant' or 'flow'
+        2. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
+        3. Check config.model_name for 'triple'
+        4. Check checkpoint state_dict for model type keys
+        5. Default to 'clean'
         
         Returns:
-            str: 'clean' or 'triple'
+            str: 'clean', 'triple', 'ddpm', or 'interpolant'
         """
         # Method 1: Check model_name in config
-        model_name = getattr(config, 'model_name', '')
-        if 'triple' in model_name.lower():
+        model_name = getattr(config, 'model_name', '').lower()
+        
+        # Check for interpolant/flow matching first
+        if any(x in model_name for x in ['interpolant', 'flow']):
+            if verbose:
+                print(f"[ModelManager] Detected 'interpolant' model from model_name: {model_name}")
+            return 'interpolant'
+        
+        # Check for DDPM/score models
+        if any(x in model_name for x in ['ddpm', 'ncsnpp', 'score']):
+            if verbose:
+                print(f"[ModelManager] Detected 'ddpm' model from model_name: {model_name}")
+            return 'ddpm'
+        
+        if 'triple' in model_name:
             if verbose:
                 print(f"[ModelManager] Detected 'triple' model from model_name: {model_name}")
             return 'triple'
@@ -292,7 +324,26 @@ class ModelManager:
         # Method 2: Check checkpoint state_dict structure
         if config.best_ckpt and os.path.exists(config.best_ckpt):
             try:
-                state_dict = torch.load(config.best_ckpt, map_location='cpu', weights_only=False).get('state_dict', {})
+                checkpoint = torch.load(config.best_ckpt, map_location='cpu', weights_only=False)
+                state_dict = checkpoint.get('state_dict', {})
+                hparams = checkpoint.get('hyper_parameters', {})
+                
+                # Check for interpolant model structure
+                # Interpolant models have 'interpolant.*' keys or x0_mode in hparams
+                interpolant_keys = [k for k in state_dict.keys() if 'interpolant' in k]
+                if interpolant_keys or hparams.get('x0_mode'):
+                    if verbose:
+                        print(f"[ModelManager] Detected 'interpolant' model from checkpoint structure")
+                    return 'interpolant'
+                
+                # Check for DDPM/score_models structure
+                # score_models saves 'score_model.*' keys
+                ddpm_keys = [k for k in state_dict.keys() if 'score_model' in k and 'model.score_model' not in k]
+                if ddpm_keys or hparams.get('sde_type') or hparams.get('sde'):
+                    if verbose:
+                        print(f"[ModelManager] Detected 'ddpm' model from checkpoint structure")
+                    return 'ddpm'
+                
                 # Triple models have keys like 'model.hydro_dm_model.*', 'model.gas_model.*', 'model.stars_model.*'
                 triple_keys = [k for k in state_dict.keys() if any(x in k for x in ['hydro_dm_model', 'gas_model', 'stars_model'])]
                 if triple_keys:
@@ -312,7 +363,7 @@ class ModelManager:
         """
         Initialize the VDM model and optionally the dataloader.
         
-        Supports both 'clean' (3-channel) and 'triple' (3 separate 1-channel) models.
+        Supports 'clean', 'triple', 'ddpm', and 'interpolant' models.
         Model type is auto-detected from config.model_name or checkpoint structure.
         
         Args:
@@ -327,7 +378,11 @@ class ModelManager:
         # Detect model type
         model_type = ModelManager.detect_model_type(config, verbose=verbose)
         
-        if model_type == 'triple':
+        if model_type == 'interpolant':
+            return ModelManager._initialize_interpolant(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        elif model_type == 'ddpm':
+            return ModelManager._initialize_ddpm(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        elif model_type == 'triple':
             return ModelManager._initialize_triple(config, verbose=verbose, skip_data_loading=skip_data_loading)
         else:
             return ModelManager._initialize_clean(config, verbose=verbose, skip_data_loading=skip_data_loading)
@@ -530,6 +585,415 @@ class ModelManager:
         
         return hydro, vdm_model
     
+    @staticmethod
+    def _initialize_ddpm(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize a DDPM/score_models model (NCSNpp or DDPM architecture).
+        
+        These models use the score_models package and Denoising Score Matching loss.
+        Uses the DIRECT score_models approach for proper weight loading.
+        """
+        if verbose:
+            print("[ModelManager] Initializing DDPM/Score Model (direct score_models approach)...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Import score_models directly (NOT LightScoreModel wrapper)
+        try:
+            from score_models import ScoreModel, NCSNpp, DDPM
+            SCORE_MODELS_AVAILABLE = True
+        except ImportError as e:
+            raise ImportError(f"DDPM model requires score_models package: {e}")
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"DDPM model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        state_dict = checkpoint.get('state_dict', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in list(hparams.items())[:20]:
+                print(f"  {k}: {v}")
+        
+        # Extract model configuration from hparams
+        sde_type = hparams.get('sde_type', hparams.get('sde', 'vp')).lower()
+        beta_min = hparams.get('beta_min', 0.1)
+        beta_max = hparams.get('beta_max', 20.0)
+        sigma_min = hparams.get('sigma_min', 0.01)
+        sigma_max = hparams.get('sigma_max', 50.0)
+        n_sampling_steps = hparams.get('n_sampling_steps', 1000)
+        use_param_conditioning = hparams.get('use_param_conditioning', False)
+        
+        # Auto-detect conditioning channels from config
+        conditioning_channels = getattr(config, 'conditioning_channels', 1)
+        large_scale_channels = getattr(config, 'large_scale_channels', 3)
+        n_params = getattr(config, 'n_params', 35) if use_param_conditioning else 0
+        
+        # Total spatial conditioning = 1 (DM) + large_scale_channels
+        total_spatial_cond = 1 + large_scale_channels
+        output_channels = 3  # [DM, Gas, Stars]
+        
+        # Build condition list based on what was used in training
+        if use_param_conditioning:
+            condition_types = ['input', 'vector']
+        else:
+            condition_types = ['input']
+        
+        # Get NCSNpp specific params from hparams or config
+        nf = hparams.get('nf', getattr(config, 'nf', 96))
+        ch_mult_str = hparams.get('ch_mult', getattr(config, 'ch_mult', '1,2,4,8'))
+        if isinstance(ch_mult_str, str):
+            ch_mult = tuple(map(int, ch_mult_str.split(',')))
+        else:
+            ch_mult = tuple(ch_mult_str) if hasattr(ch_mult_str, '__iter__') else (1, 2, 4, 8)
+        
+        if verbose:
+            print(f"[ModelManager] DDPM Model Configuration:")
+            print(f"  SDE type: {sde_type}")
+            print(f"  nf: {nf}, ch_mult: {ch_mult}")
+            print(f"  Spatial conditioning channels: {total_spatial_cond}")
+            print(f"  Parameter conditioning: {use_param_conditioning} ({n_params} params)")
+            print(f"  Sampling steps: {n_sampling_steps}")
+        
+        # Create NCSNpp network with same architecture as training
+        net_kwargs = {
+            'channels': output_channels,
+            'dimensions': 2,
+            'nf': nf,
+            'ch_mult': ch_mult,
+            'attention': hparams.get('attention', True),
+            'condition': condition_types,
+            'condition_input_channels': total_spatial_cond,
+        }
+        if use_param_conditioning:
+            net_kwargs['condition_vector_channels'] = n_params
+        
+        net = NCSNpp(**net_kwargs)
+        
+        # Create ScoreModel directly using original score_models interface
+        # This is the KEY difference - use score_models.ScoreModel directly
+        if sde_type == 'vp':
+            score_model = ScoreModel(
+                model=net,
+                sde='vp',
+                beta_min=beta_min,
+                beta_max=beta_max,
+                T=1.0,
+                epsilon=1e-5,
+                device=device,
+            )
+        else:  # ve
+            score_model = ScoreModel(
+                model=net,
+                sde='ve',
+                sigma_min=sigma_min,
+                sigma_max=sigma_max,
+                T=1.0,
+                device=device,
+            )
+        
+        if verbose:
+            print(f"[ModelManager] Created ScoreModel with {sde_type.upper()}-SDE")
+            print(f"[ModelManager] Loading weights from Lightning checkpoint...")
+        
+        # Extract network weights from Lightning checkpoint
+        # Lightning saves as: 'score_model.model.xxx' or 'model.xxx'
+        model_state = {}
+        for k, v in state_dict.items():
+            if k.startswith('score_model.model.'):
+                # Strip 'score_model.model.' prefix to get raw NCSNpp keys
+                new_key = k.replace('score_model.model.', '')
+                model_state[new_key] = v
+            elif k.startswith('model.score_model.model.'):
+                # Alternative Lightning format
+                new_key = k.replace('model.score_model.model.', '')
+                model_state[new_key] = v
+            elif k.startswith('model.'):
+                # Fallback: 'model.xxx' -> 'xxx'
+                new_key = k.replace('model.', '')
+                model_state[new_key] = v
+        
+        if len(model_state) == 0:
+            raise ValueError(
+                f"Could not extract model weights from checkpoint. "
+                f"State dict keys: {list(state_dict.keys())[:10]}..."
+            )
+        
+        # Load weights into the NCSNpp network
+        missing, unexpected = score_model.model.load_state_dict(model_state, strict=False)
+        
+        if verbose:
+            print(f"[ModelManager] Loaded {len(model_state)} weight tensors")
+            if missing:
+                print(f"[ModelManager] Missing keys: {missing[:5]}..." if len(missing) > 5 else f"[ModelManager] Missing keys: {missing}")
+            if unexpected:
+                print(f"[ModelManager] Unexpected keys: {unexpected[:5]}..." if len(unexpected) > 5 else f"[ModelManager] Unexpected keys: {unexpected}")
+        
+        score_model.model.eval()
+        score_model.model.to(device)
+        
+        # Wrap in a simple class that provides BIND-compatible interface
+        class DDPMModelWrapper:
+            """Wrapper that provides BIND-compatible interface for score_models.ScoreModel."""
+            
+            def __init__(self, score_model, n_sampling_steps, use_param_conditioning, hparams):
+                self.score_model = score_model
+                self.n_sampling_steps = n_sampling_steps
+                self.use_param_conditioning = use_param_conditioning
+                # Store hparams as namespace for compatibility
+                self.hparams = type('HParams', (), hparams)()
+                self.hparams.n_sampling_steps = n_sampling_steps
+                self._device = device
+            
+            def to(self, device):
+                """Move model to device."""
+                self._device = device
+                self.score_model.model.to(device)
+                return self
+            
+            def eval(self):
+                """Set model to eval mode."""
+                self.score_model.model.eval()
+                return self
+            
+            def train(self, mode=True):
+                """Set model to train mode."""
+                self.score_model.model.train(mode)
+                return self
+            
+            def parameters(self):
+                """Return model parameters."""
+                return self.score_model.model.parameters()
+            
+            def draw_samples(
+                self,
+                conditioning,
+                batch_size,
+                n_sampling_steps=None,
+                param_conditioning=None,
+                verbose=False,
+            ):
+                """
+                BIND-compatible sampling interface.
+                
+                Args:
+                    conditioning: Spatial conditioning tensor (B, C_cond, H, W)
+                    batch_size: Number of samples to generate
+                    n_sampling_steps: Sampling steps (default: self.n_sampling_steps)
+                    param_conditioning: Optional parameter conditioning (B, N_params)
+                    verbose: Show progress
+                
+                Returns:
+                    samples: Generated samples (B, 3, H, W)
+                """
+                B, C_cond, H, W = conditioning.shape
+                steps = n_sampling_steps or self.n_sampling_steps
+                
+                # Build condition list for score_models.sample()
+                # Format: [spatial_cond, (optional) vector_cond]
+                condition_list = [conditioning.to(self._device)]
+                if param_conditioning is not None:
+                    condition_list.append(param_conditioning.to(self._device))
+                
+                # Generate samples using original score_models interface
+                with torch.no_grad():
+                    samples = self.score_model.sample(
+                        shape=[batch_size, 3, H, W],
+                        steps=steps,
+                        condition=condition_list,
+                    )
+                
+                return samples
+        
+        # Create wrapped model
+        model = DDPMModelWrapper(
+            score_model=score_model,
+            n_sampling_steps=n_sampling_steps,
+            use_param_conditioning=use_param_conditioning,
+            hparams=dict(hparams),
+        )
+        
+        if verbose:
+            n_params_total = sum(p.numel() for p in score_model.model.parameters())
+            print(f"[ModelManager] ✓ DDPM model loaded successfully")
+            print(f"[ModelManager] Model parameters: {n_params_total:,}")
+            print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
+        
+        # Load data if requested
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, model
+    
+    @staticmethod
+    def _initialize_interpolant(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize an Interpolant/Flow Matching model.
+        
+        These models use flow matching for the DMO -> Hydro mapping.
+        """
+        if verbose:
+            print("[ModelManager] Initializing INTERPOLANT/Flow Matching model...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Import interpolant module
+        from vdm.interpolant_model import LightInterpolant, VelocityNetWrapper
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"Interpolant model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        state_dict = checkpoint.get('state_dict', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in list(hparams.items())[:15]:
+                print(f"  {k}: {v}")
+        
+        # Extract model configuration from hparams
+        n_sampling_steps = hparams.get('n_sampling_steps', 50)
+        x0_mode = hparams.get('x0_mode', 'zeros')
+        use_stochastic_interpolant = hparams.get('use_stochastic_interpolant', False)
+        sigma = hparams.get('sigma', 0.0)
+        learning_rate = hparams.get('learning_rate', 1e-4)
+        
+        # Auto-detect conditioning channels from config
+        conditioning_channels = getattr(config, 'conditioning_channels', 1)
+        large_scale_channels = getattr(config, 'large_scale_channels', 3)
+        total_conditioning_channels = conditioning_channels + large_scale_channels
+        output_channels = 3  # [DM, Gas, Stars]
+        
+        # Get UNet parameters from config/hparams
+        embedding_dim = getattr(config, 'embedding_dim', 256)
+        n_blocks = getattr(config, 'n_blocks', 32)
+        norm_groups = getattr(config, 'norm_groups', 8)
+        n_attention_heads = getattr(config, 'n_attention_heads', 8)
+        use_fourier_features = getattr(config, 'use_fourier_features', True)
+        fourier_legacy = getattr(config, 'fourier_legacy', False)
+        add_attention = getattr(config, 'add_attention', True)
+        use_param_conditioning = hparams.get('use_param_conditioning', getattr(config, 'use_param_conditioning', True))
+        
+        if verbose:
+            print(f"[ModelManager] Interpolant Model Configuration:")
+            print(f"  x0 mode: {x0_mode}")
+            print(f"  Stochastic: {use_stochastic_interpolant} (sigma={sigma})")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  Conditioning channels: {total_conditioning_channels}")
+            print(f"  Param conditioning: {use_param_conditioning}")
+        
+        # Create UNetVDM - same architecture as train_interpolant.py
+        # UNetVDM takes input_channels (target) and conditioning_channels separately
+        # It concatenates them internally and handles Fourier features
+        from vdm.networks_clean import UNetVDM
+        
+        # Load param normalization if using param conditioning
+        param_min = None
+        param_max = None
+        if use_param_conditioning:
+            param_norm_path = hparams.get('param_norm_path', getattr(config, 'param_norm_path', None))
+            if param_norm_path and os.path.exists(param_norm_path):
+                import pandas as pd
+                minmax_df = pd.read_csv(param_norm_path)
+                param_min = np.array(minmax_df['MinVal'])
+                param_max = np.array(minmax_df['MaxVal'])
+                if verbose:
+                    print(f"[ModelManager] Loaded {len(param_min)} param bounds from {param_norm_path}")
+        
+        unet = UNetVDM(
+            input_channels=output_channels,  # Target channels (3)
+            conditioning_channels=conditioning_channels,  # DM channels (1)
+            large_scale_channels=large_scale_channels,  # Large-scale context (3)
+            embedding_dim=embedding_dim,
+            n_blocks=n_blocks,
+            norm_groups=norm_groups,
+            n_attention_heads=n_attention_heads,
+            use_fourier_features=use_fourier_features,
+            legacy_fourier=fourier_legacy,
+            add_attention=add_attention,
+            use_param_conditioning=use_param_conditioning,
+            param_min=param_min,
+            param_max=param_max,
+        )
+        
+        # Wrap for velocity prediction
+        velocity_model = VelocityNetWrapper(
+            net=unet,
+            output_channels=output_channels,
+            conditioning_channels=total_conditioning_channels,
+        )
+        
+        # Create LightInterpolant
+        model = LightInterpolant(
+            velocity_model=velocity_model,
+            learning_rate=learning_rate,
+            n_sampling_steps=n_sampling_steps,
+            use_stochastic_interpolant=use_stochastic_interpolant,
+            sigma=sigma,
+            x0_mode=x0_mode,
+            use_param_conditioning=use_param_conditioning,
+        )
+        
+        if verbose:
+            print(f"[ModelManager] Loading state dict into LightInterpolant...")
+        
+        # Load state dict
+        model.load_state_dict(state_dict)
+        model = model.eval().to(device)
+        
+        if verbose:
+            n_params_total = sum(p.numel() for p in model.parameters())
+            print(f"[ModelManager] ✓ Interpolant model loaded successfully")
+            print(f"[ModelManager] Model parameters: {n_params_total:,}")
+            print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
+        
+        # Load data if requested
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, model
+
     @staticmethod
     def _initialize_clean(config, verbose=False, skip_data_loading=False):
         """
@@ -985,7 +1449,7 @@ def sample(vdm, conditions, batch_size=1, conditional_params=None,):
         hydro_sample = vdm.draw_samples(
             conditioning=cond_expanded,
             batch_size=batch_size,
-            n_sampling_steps=getattr(vdm.hparams, 'n_sampling_steps', 250),
+            n_sampling_steps=getattr(vdm.hparams, 'n_sampling_steps', 1000),
             param_conditioning=param_expanded,
         )  
         

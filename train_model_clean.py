@@ -28,6 +28,7 @@ from vdm.callbacks import (
     FIDMonitorCallback, 
     GradientMonitorCallback, 
     CustomEarlyStopping,
+    EMACallback,
 )
 
 torch.set_float32_matmul_precision("medium")
@@ -50,6 +51,11 @@ def train(
     limit_train_batches=1.0,
     tb_logs='tb_logs',
     cpu_only=False,
+    # EMA parameters
+    enable_ema=False,
+    ema_decay=0.9999,
+    ema_update_after_step=0,
+    ema_update_every=1,
 ):
     """
     Train the CleanVDM model.
@@ -71,6 +77,10 @@ def train(
         limit_train_batches: Fraction of training data per epoch
         tb_logs: TensorBoard logs directory
         cpu_only: Force CPU training (for testing only, much slower than GPU)
+        enable_ema: Enable Exponential Moving Average of weights (recommended for diffusion)
+        ema_decay: EMA decay factor (0.9999 is common for diffusion models)
+        ema_update_after_step: Start EMA updates after this many steps (warmup)
+        ema_update_every: Update EMA every N steps
     """
     
     ckpt_path = None
@@ -134,6 +144,18 @@ def train(
         )
         callbacks_list.append(grad_callback)
         print(f"✓ Gradient monitoring enabled (every {gradient_log_frequency} steps)")
+    
+    # Add EMA callback if enabled
+    if enable_ema:
+        ema_callback = EMACallback(
+            decay=ema_decay,
+            update_after_step=ema_update_after_step,
+            update_every=ema_update_every,
+            use_ema_for_validation=True,
+            save_ema_weights=True,
+        )
+        callbacks_list.append(ema_callback)
+        print(f"✓ EMA enabled (decay={ema_decay}, warmup={ema_update_after_step} steps)")
 
     # Auto-detect number of available devices and set strategy accordingly
     # NOTE: cpu_only is passed as a global or through kwargs in train() function
@@ -317,6 +339,12 @@ if __name__ == "__main__":
         enable_gradient_monitoring = params.getboolean('enable_gradient_monitoring', fallback=True)
         gradient_log_frequency = int(params.get('gradient_log_frequency', fallback=100))
         
+        # EMA (Exponential Moving Average)
+        enable_ema = params.getboolean('enable_ema', fallback=False)
+        ema_decay = float(params.get('ema_decay', fallback=0.9999))
+        ema_update_after_step = int(params.get('ema_update_after_step', fallback=0))
+        ema_update_every = int(params.get('ema_update_every', fallback=1))
+        
         # Stellar normalization: quantile OR Z-score
         quantile_path = params.get('quantile_path', fallback=None)
         if quantile_path is not None and quantile_path.lower() in ['none', '']:
@@ -496,4 +524,9 @@ if __name__ == "__main__":
         limit_train_batches=limit_train_batches,
         tb_logs=tb_logs,
         cpu_only=cli_args.cpu_only,
+        # EMA parameters
+        enable_ema=enable_ema,
+        ema_decay=ema_decay,
+        ema_update_after_step=ema_update_after_step,
+        ema_update_every=ema_update_every,
     )
