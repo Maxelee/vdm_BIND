@@ -250,5 +250,14 @@ python run_bind_unified.py --suite cv --sim_nums 0 --batch_size 2 --realizations
 
 ## Branch Strategy
 
-- **main**: Stable production code
-- **ddpm**: DDPM implementation for training, wrapped so it can be used in BIND
+- **main**: Stable production VDM code (clean + triple models)
+- **ddpm**: Adds DDPM/score_models integration (builds on main)
+- **interpolants**: Adds flow matching / stochastic interpolants (builds on ddpm)
+
+### Branch Relationship
+```
+main (VDM clean, VDM triple)
+  └── ddpm (+ddpm_model.py, +train_ddpm.py, +configs/ddpm.ini)
+        └── interpolants (+interpolant_model.py, +train_interpolant.py, +configs/interpolant.ini, +MODEL_COMPARISON.md)
+```
+
