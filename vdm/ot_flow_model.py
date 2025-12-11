@@ -321,7 +321,9 @@ class OTInterpolant(nn.Module):
         # Compute path straightness metric (for logging)
         if use_ot:
             # Path length: ||x1 - x0|| - straighter paths should be shorter on average
-            path_length = torch.norm(x1_paired - x0_paired, dim=(1, 2, 3)).mean()
+            # Flatten spatial dims and compute L2 norm per sample
+            diff = (x1_paired - x0_paired).flatten(start_dim=1)  # [B, C*H*W]
+            path_length = torch.norm(diff, dim=1).mean()
             metrics['path_length'] = path_length.item()
         
         return loss, metrics
