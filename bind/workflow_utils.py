@@ -266,35 +266,44 @@ class ConfigLoader:
 
 class ModelManager:
     """
-    Model manager supporting both 'clean' (3-channel) and 'triple' (3 separate 1-channel) models.
+    Model manager supporting multiple model types:
     
     Model Types:
     - clean: Single 3-channel model (LightCleanVDM)
     - triple: Three independent 1-channel models (LightTripleVDM)
+    - ddpm: Score-based diffusion model (score_models package)
+    - interpolant: Flow matching / stochastic interpolant (LightInterpolant)
     
     The model type is auto-detected from:
-    1. config.model_name containing 'triple'
-    2. Checkpoint state_dict having triple model structure (hydro_dm_model, gas_model, stars_model)
+    1. config.model_name containing keywords
+    2. Checkpoint state_dict structure
     """
     
     @staticmethod
     def detect_model_type(config, verbose=False):
         """
-        Detect whether the model is 'clean' (3-channel), 'triple' (3 separate models), or 'ddpm' (score_models).
+        Detect model type from config and/or checkpoint.
         
         Detection order:
-        1. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
-        2. Check config.model_name for 'triple'
-        3. Check checkpoint state_dict for model type keys
-        4. Default to 'clean'
+        1. Check config.model_name for 'interpolant' or 'flow'
+        2. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
+        3. Check config.model_name for 'triple'
+        4. Check checkpoint state_dict for model type keys
+        5. Default to 'clean'
         
         Returns:
-            str: 'clean', 'triple', or 'ddpm'
+            str: 'clean', 'triple', 'ddpm', or 'interpolant'
         """
         # Method 1: Check model_name in config
         model_name = getattr(config, 'model_name', '').lower()
         
-        # Check for DDPM/score models first
+        # Check for interpolant/flow matching first
+        if any(x in model_name for x in ['interpolant', 'flow']):
+            if verbose:
+                print(f"[ModelManager] Detected 'interpolant' model from model_name: {model_name}")
+            return 'interpolant'
+        
+        # Check for DDPM/score models
         if any(x in model_name for x in ['ddpm', 'ncsnpp', 'score']):
             if verbose:
                 print(f"[ModelManager] Detected 'ddpm' model from model_name: {model_name}")
@@ -311,6 +320,14 @@ class ModelManager:
                 checkpoint = torch.load(config.best_ckpt, map_location='cpu', weights_only=False)
                 state_dict = checkpoint.get('state_dict', {})
                 hparams = checkpoint.get('hyper_parameters', {})
+                
+                # Check for interpolant model structure
+                # Interpolant models have 'interpolant.*' keys or x0_mode in hparams
+                interpolant_keys = [k for k in state_dict.keys() if 'interpolant' in k]
+                if interpolant_keys or hparams.get('x0_mode'):
+                    if verbose:
+                        print(f"[ModelManager] Detected 'interpolant' model from checkpoint structure")
+                    return 'interpolant'
                 
                 # Check for DDPM/score_models structure
                 # score_models saves 'score_model.*' keys
@@ -339,7 +356,7 @@ class ModelManager:
         """
         Initialize the VDM model and optionally the dataloader.
         
-        Supports 'clean' (3-channel), 'triple' (3 separate 1-channel), and 'ddpm' (score_models) models.
+        Supports 'clean', 'triple', 'ddpm', and 'interpolant' models.
         Model type is auto-detected from config.model_name or checkpoint structure.
         
         Args:
@@ -354,7 +371,9 @@ class ModelManager:
         # Detect model type
         model_type = ModelManager.detect_model_type(config, verbose=verbose)
         
-        if model_type == 'ddpm':
+        if model_type == 'interpolant':
+            return ModelManager._initialize_interpolant(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        elif model_type == 'ddpm':
             return ModelManager._initialize_ddpm(config, verbose=verbose, skip_data_loading=skip_data_loading)
         elif model_type == 'triple':
             return ModelManager._initialize_triple(config, verbose=verbose, skip_data_loading=skip_data_loading)
@@ -820,6 +839,133 @@ class ModelManager:
         
         return hydro, model
     
+    @staticmethod
+    def _initialize_interpolant(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize an Interpolant/Flow Matching model.
+        
+        These models use flow matching for the DMO -> Hydro mapping.
+        """
+        if verbose:
+            print("[ModelManager] Initializing INTERPOLANT/Flow Matching model...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Import interpolant module
+        from vdm.interpolant_model import LightInterpolant, VelocityNetWrapper
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"Interpolant model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        state_dict = checkpoint.get('state_dict', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in list(hparams.items())[:15]:
+                print(f"  {k}: {v}")
+        
+        # Extract model configuration from hparams
+        n_sampling_steps = hparams.get('n_sampling_steps', 50)
+        x0_mode = hparams.get('x0_mode', 'zeros')
+        use_stochastic_interpolant = hparams.get('use_stochastic_interpolant', False)
+        sigma = hparams.get('sigma', 0.0)
+        learning_rate = hparams.get('learning_rate', 1e-4)
+        
+        # Auto-detect conditioning channels from config
+        conditioning_channels = getattr(config, 'conditioning_channels', 1)
+        large_scale_channels = getattr(config, 'large_scale_channels', 3)
+        total_conditioning_channels = conditioning_channels + large_scale_channels
+        output_channels = 3  # [DM, Gas, Stars]
+        
+        # Get UNet parameters from config/hparams
+        embedding_dim = getattr(config, 'embedding_dim', 256)
+        n_blocks = getattr(config, 'n_blocks', 32)
+        norm_groups = getattr(config, 'norm_groups', 8)
+        n_attention_heads = getattr(config, 'n_attention_heads', 8)
+        use_fourier_features = getattr(config, 'use_fourier_features', True)
+        fourier_legacy = getattr(config, 'fourier_legacy', False)
+        add_attention = getattr(config, 'add_attention', True)
+        
+        if verbose:
+            print(f"[ModelManager] Interpolant Model Configuration:")
+            print(f"  x0 mode: {x0_mode}")
+            print(f"  Stochastic: {use_stochastic_interpolant} (sigma={sigma})")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  Conditioning channels: {total_conditioning_channels}")
+        
+        # Create UNet
+        from vdm.networks_clean import UNet
+        
+        input_channels = output_channels + total_conditioning_channels
+        unet = UNet(
+            in_channels=input_channels,
+            out_channels=output_channels,
+            embedding_dim=embedding_dim,
+            n_blocks=n_blocks,
+            norm_groups=norm_groups,
+            n_attention_heads=n_attention_heads,
+            use_fourier_features=use_fourier_features,
+            fourier_legacy=fourier_legacy,
+            add_attention=add_attention,
+        )
+        
+        # Wrap for velocity prediction
+        velocity_model = VelocityNetWrapper(
+            net=unet,
+            output_channels=output_channels,
+            conditioning_channels=total_conditioning_channels,
+        )
+        
+        # Create LightInterpolant
+        model = LightInterpolant(
+            velocity_model=velocity_model,
+            learning_rate=learning_rate,
+            n_sampling_steps=n_sampling_steps,
+            use_stochastic_interpolant=use_stochastic_interpolant,
+            sigma=sigma,
+            x0_mode=x0_mode,
+        )
+        
+        if verbose:
+            print(f"[ModelManager] Loading state dict into LightInterpolant...")
+        
+        # Load state dict
+        model.load_state_dict(state_dict)
+        model = model.eval().to(device)
+        
+        if verbose:
+            n_params_total = sum(p.numel() for p in model.parameters())
+            print(f"[ModelManager] ✓ Interpolant model loaded successfully")
+            print(f"[ModelManager] Model parameters: {n_params_total:,}")
+            print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
+        
+        # Load data if requested
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, model
+
     @staticmethod
     def _initialize_clean(config, verbose=False, skip_data_loading=False):
         """

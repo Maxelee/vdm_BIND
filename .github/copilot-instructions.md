@@ -4,12 +4,14 @@
 
 This project has **two main pipelines** that share the `vdm/` core package:
 
-### Training Pipeline (variational diffusion model)
+### Training Pipeline (generative models)
 ```
-train_model_clean.py → vdm/vdm_model_clean.py → vdm/networks_clean.py
-train_triple_model.py → vdm/vdm_model_triple.py → vdm/networks_clean.py
+train_model_clean.py → vdm/vdm_model_clean.py → vdm/networks_clean.py   # VDM
+train_triple_model.py → vdm/vdm_model_triple.py → vdm/networks_clean.py  # Triple VDM
+train_ddpm.py → vdm/ddpm_model.py → score_models                        # DDPM
+train_interpolant.py → vdm/interpolant_model.py → vdm/networks_clean.py # Flow Matching
 ```
-- **Purpose**: Train diffusion models to learn DMO → Hydro mapping
+- **Purpose**: Train generative models to learn DMO → Hydro mapping
 - **Input**: Halo-centric cutouts (128×128) with conditional parameters
 - **Output**: 3-channel predictions [DM_hydro, Gas, Stars]
 
@@ -26,14 +28,18 @@ bind_predict.py → bind/bind.py (user-friendly CLI)
 ```
 vdm_BIND/
 ├── config.py                 # Centralized path configuration (env vars)
-├── train_model_clean.py      # Training entry point (3-channel)
-├── train_triple_model.py     # Training entry point (triple independent)
+├── train_model_clean.py      # Training entry point (3-channel VDM)
+├── train_triple_model.py     # Training entry point (triple independent VDM)
+├── train_ddpm.py             # Training entry point (DDPM/NCSNpp)
+├── train_interpolant.py      # Training entry point (flow matching)
 ├── run_bind_unified.py       # BIND inference on simulation suites
 ├── bind_predict.py           # User-friendly BIND CLI for custom simulations
 ├── vdm/                      # Core VDM package
 │   ├── networks_clean.py     # UNet architecture
 │   ├── vdm_model_clean.py    # 3-channel LightCleanVDM
 │   ├── vdm_model_triple.py   # 3 independent VDMs
+│   ├── ddpm_model.py         # DDPM/NCSNpp using score_models
+│   ├── interpolant_model.py  # Flow matching / stochastic interpolants
 │   ├── astro_dataset.py      # Data loading
 │   ├── io_utils.py           # Consolidated I/O utilities (load_simulation, project_particles_2d)
 │   └── validation_plots.py   # Validation plotting utilities
@@ -45,7 +51,7 @@ vdm_BIND/
 ├── configs/                  # Training configurations
 ├── scripts/                  # SLURM job scripts
 ├── data/                     # Normalization stats & quantile transformer
-├── tests/                    # Unit & integration tests (142 tests)
+├── tests/                    # Unit & integration tests
 ├── analysis/                 # Paper plots and notebooks
 │   ├── paper_utils.py        # Shared analysis functions (radial profiles, plotting)
 │   └── notebooks/            # Paper figures + training validation
@@ -164,10 +170,12 @@ from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 | `vdm/networks_clean.py` | UNet architecture with Fourier features, attention, cross-attention |
 | `vdm/vdm_model_clean.py` | 3-channel VDM with focal loss, per-channel weighting |
 | `vdm/vdm_model_triple.py` | 3 independent single-channel VDMs |
-| `vdm/io_utils.py` | **NEW** Consolidated I/O: `load_simulation()`, `project_particles_2d()`, `load_halo_catalog()` |
+| `vdm/ddpm_model.py` | DDPM/NCSNpp wrapper using score_models package |
+| `vdm/interpolant_model.py` | Flow matching / stochastic interpolants (LightInterpolant) |
+| `vdm/io_utils.py` | Consolidated I/O: `load_simulation()`, `project_particles_2d()`, `load_halo_catalog()` |
 | `bind/bind.py` | BIND class: voxelize, extract, generate, paste |
 | `bind/workflow_utils.py` | ConfigLoader, ModelManager, sample() function |
-| `bind/power_spec.py` | **Consolidated** Power spectrum: `compute_power_spectrum_simple/batch()`, `compute_cross_power_spectrum()` |
+| `bind/power_spec.py` | Power spectrum: `compute_power_spectrum_simple/batch()`, `compute_cross_power_spectrum()` |
 | `bind_predict.py` | User-friendly CLI for custom simulations (SubFind, Rockstar, CSV) |
 | `run_bind_unified.py` | BIND inference on CAMELS simulation suites |
 | `analysis/paper_utils.py` | Shared analysis functions: `compute_radial_profile()`, plotting utilities |
@@ -243,5 +251,4 @@ python run_bind_unified.py --suite cv --sim_nums 0 --batch_size 2 --realizations
 ## Branch Strategy
 
 - **main**: Stable production code
-- **astro_params**: 3-channel VDM with cosmological parameter conditioning
-- **seperate_training**: Triple independent VDMs (one per output channel)
+- **ddpm**: DDPM implementation for training, wrapped so it can be used in BIND
