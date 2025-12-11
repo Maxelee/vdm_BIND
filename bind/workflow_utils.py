@@ -309,6 +309,7 @@ class ModelManager:
     - clean: Single 3-channel model (LightCleanVDM)
     - triple: Three independent 1-channel models (LightTripleVDM)
     - ddpm: Score-based diffusion model (score_models package)
+    - dsm: Denoising Score Matching with custom UNet (LightDSM)
     - interpolant: Flow matching / stochastic interpolant (LightInterpolant)
     - consistency: Consistency models (Song et al., 2023) - single/few-step sampling
     - ot_flow: Optimal Transport Flow Matching (Lipman et al., 2022)
@@ -326,14 +327,15 @@ class ModelManager:
         Detection order:
         1. Check config.model_name for 'consistency'
         2. Check config.model_name for 'ot_flow' or 'ot-flow' or 'optimal_transport'
-        3. Check config.model_name for 'interpolant' or 'flow'
-        4. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
-        5. Check config.model_name for 'triple'
-        6. Check checkpoint state_dict for model type keys
-        7. Default to 'clean'
+        3. Check config.model_name for 'dsm' (Denoising Score Matching with custom UNet)
+        4. Check config.model_name for 'interpolant' or 'flow'
+        5. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
+        6. Check config.model_name for 'triple'
+        7. Check checkpoint state_dict for model type keys
+        8. Default to 'clean'
         
         Returns:
-            str: 'clean', 'triple', 'ddpm', 'interpolant', 'consistency', or 'ot_flow'
+            str: 'clean', 'triple', 'ddpm', 'dsm', 'interpolant', 'consistency', or 'ot_flow'
         """
         # Method 1: Check model_name in config
         model_name = getattr(config, 'model_name', '').lower()
@@ -349,6 +351,12 @@ class ModelManager:
             if verbose:
                 print(f"[ModelManager] Detected 'ot_flow' model from model_name: {model_name}")
             return 'ot_flow'
+        
+        # Check for DSM (Denoising Score Matching with custom UNet) - before ddpm
+        if 'dsm' in model_name:
+            if verbose:
+                print(f"[ModelManager] Detected 'dsm' model from model_name: {model_name}")
+            return 'dsm'
         
         # Check for interpolant/flow matching
         if any(x in model_name for x in ['interpolant', 'flow']):
@@ -398,6 +406,16 @@ class ModelManager:
                         print(f"[ModelManager] Detected 'interpolant' model from checkpoint structure")
                     return 'interpolant'
                 
+                # Check for DSM model structure (custom UNet with VP-SDE schedule)
+                # DSM models have 'model.net.*' keys and beta_min/beta_max in hparams (but no sde_type)
+                dsm_keys = [k for k in state_dict.keys() if k.startswith('model.net.')]
+                has_vp_schedule = hparams.get('beta_min') is not None and hparams.get('beta_max') is not None
+                has_sde = hparams.get('sde_type') or hparams.get('sde')
+                if dsm_keys and has_vp_schedule and not has_sde:
+                    if verbose:
+                        print(f"[ModelManager] Detected 'dsm' model from checkpoint structure")
+                    return 'dsm'
+                
                 # Check for DDPM/score_models structure
                 # score_models saves 'score_model.*' keys
                 ddpm_keys = [k for k in state_dict.keys() if 'score_model' in k and 'model.score_model' not in k]
@@ -425,7 +443,7 @@ class ModelManager:
         """
         Initialize the VDM model and optionally the dataloader.
         
-        Supports 'clean', 'triple', 'ddpm', 'interpolant', 'consistency', and 'ot_flow' models.
+        Supports 'clean', 'triple', 'ddpm', 'dsm', 'interpolant', 'consistency', and 'ot_flow' models.
         Model type is auto-detected from config.model_name or checkpoint structure.
         
         Args:
@@ -444,6 +462,8 @@ class ModelManager:
             return ModelManager._initialize_consistency(config, verbose=verbose, skip_data_loading=skip_data_loading)
         elif model_type == 'ot_flow':
             return ModelManager._initialize_ot_flow(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        elif model_type == 'dsm':
+            return ModelManager._initialize_dsm(config, verbose=verbose, skip_data_loading=skip_data_loading)
         elif model_type == 'interpolant':
             return ModelManager._initialize_interpolant(config, verbose=verbose, skip_data_loading=skip_data_loading)
         elif model_type == 'ddpm':
@@ -912,6 +932,149 @@ class ModelManager:
         
         return hydro, model
     
+    @staticmethod
+    def _initialize_dsm(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize a DSM (Denoising Score Matching) model with custom UNet.
+        
+        DSM uses the same UNet architecture as VDM/Interpolant but with
+        denoising score matching loss instead of VDM ELBO or flow matching.
+        This allows fair comparison between different loss formulations.
+        """
+        if verbose:
+            print("[ModelManager] Initializing DSM (Denoising Score Matching) model...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Import DSM module
+        from vdm.dsm_model import LightDSM, UNetDSMWrapper
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"DSM model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        state_dict = checkpoint.get('state_dict', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in list(hparams.items())[:15]:
+                print(f"  {k}: {v}")
+        
+        # Extract model configuration from hparams
+        beta_min = hparams.get('beta_min', 0.1)
+        beta_max = hparams.get('beta_max', 20.0)
+        n_sampling_steps = hparams.get('n_sampling_steps', 250)
+        use_snr_weighting = hparams.get('use_snr_weighting', True)
+        learning_rate = hparams.get('learning_rate', 1e-4)
+        channel_weights = hparams.get('channel_weights', (1.0, 1.0, 1.0))
+        
+        # Auto-detect conditioning channels from config
+        conditioning_channels = getattr(config, 'conditioning_channels', 1)
+        large_scale_channels = getattr(config, 'large_scale_channels', 3)
+        total_conditioning_channels = conditioning_channels + large_scale_channels
+        output_channels = 3  # [DM, Gas, Stars]
+        
+        # Get UNet parameters from config/hparams
+        embedding_dim = getattr(config, 'embedding_dim', 96)
+        n_blocks = getattr(config, 'n_blocks', 5)
+        norm_groups = getattr(config, 'norm_groups', 8)
+        n_attention_heads = getattr(config, 'n_attention_heads', 8)
+        use_fourier_features = getattr(config, 'use_fourier_features', True)
+        fourier_legacy = getattr(config, 'fourier_legacy', False)
+        add_attention = getattr(config, 'add_attention', True)
+        use_param_conditioning = hparams.get('use_param_conditioning', getattr(config, 'use_param_conditioning', True))
+        
+        if verbose:
+            print(f"[ModelManager] DSM Model Configuration:")
+            print(f"  Beta range: [{beta_min}, {beta_max}]")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  SNR weighting: {use_snr_weighting}")
+            print(f"  Conditioning channels: {total_conditioning_channels}")
+            print(f"  Param conditioning: {use_param_conditioning}")
+        
+        # Create UNetVDM - same architecture as VDM/Interpolant
+        from vdm.networks_clean import UNetVDM
+        
+        # Load param normalization if using param conditioning
+        param_min = None
+        param_max = None
+        if use_param_conditioning:
+            param_norm_path = hparams.get('param_norm_path', getattr(config, 'param_norm_path', None))
+            if param_norm_path and os.path.exists(param_norm_path):
+                import pandas as pd
+                minmax_df = pd.read_csv(param_norm_path)
+                param_min = np.array(minmax_df['MinVal'])
+                param_max = np.array(minmax_df['MaxVal'])
+                if verbose:
+                    print(f"[ModelManager] Loaded {len(param_min)} param bounds from {param_norm_path}")
+        
+        unet = UNetVDM(
+            input_channels=output_channels,  # Target channels (3)
+            conditioning_channels=conditioning_channels,  # DM channels (1)
+            large_scale_channels=large_scale_channels,  # Large-scale context (3)
+            embedding_dim=embedding_dim,
+            n_blocks=n_blocks,
+            norm_groups=norm_groups,
+            n_attention_heads=n_attention_heads,
+            use_fourier_features=use_fourier_features,
+            legacy_fourier=fourier_legacy,
+            add_attention=add_attention,
+            use_param_conditioning=use_param_conditioning,
+            param_min=param_min,
+            param_max=param_max,
+        )
+        
+        # Create LightDSM
+        model = LightDSM(
+            score_model=unet,
+            beta_min=beta_min,
+            beta_max=beta_max,
+            learning_rate=learning_rate,
+            n_sampling_steps=n_sampling_steps,
+            use_param_conditioning=use_param_conditioning,
+            use_snr_weighting=use_snr_weighting,
+            channel_weights=channel_weights,
+        )
+        
+        if verbose:
+            print(f"[ModelManager] Loading state dict into LightDSM...")
+        
+        # Load state dict
+        model.load_state_dict(state_dict)
+        model = model.eval().to(device)
+        
+        if verbose:
+            n_params_total = sum(p.numel() for p in model.parameters())
+            print(f"[ModelManager] ✓ DSM model loaded successfully")
+            print(f"[ModelManager] Model parameters: {n_params_total:,}")
+            print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
+        
+        # Load data if requested
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, model
+
     @staticmethod
     def _initialize_interpolant(config, verbose=False, skip_data_loading=False):
         """

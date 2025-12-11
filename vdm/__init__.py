@@ -7,6 +7,7 @@ This package provides:
 - LightTripleVDM: Lightning module for training 3 independent single-channel models
 - LightDDPM: Lightning module for DDPM/NCSNpp using score_models package
 - LightInterpolant: Lightning module for flow matching / stochastic interpolants
+- LightDSM: Lightning module for DSM using custom UNet (fair comparison with VDM)
 - AstroDataset: Dataset class for cosmological simulation data
 """
 
@@ -24,6 +25,9 @@ except ImportError:
 # Import interpolant module (no external dependencies)
 from .interpolant_model import LightInterpolant, Interpolant
 
+# Import DSM module (uses custom UNet, no external dependencies)
+from .dsm_model import LightDSM
+
 __all__ = [
     'UNetVDM',
     'CleanVDM', 
@@ -31,6 +35,7 @@ __all__ = [
     'get_astro_data',
     'LightInterpolant',
     'Interpolant',
+    'LightDSM',
 ]
 
 if _HAS_DDPM:
