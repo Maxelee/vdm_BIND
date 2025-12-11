@@ -55,5 +55,5 @@ echo "Checking POT installation..."
 python -c "import ot; print(f'POT version: {ot.__version__}')" || echo "POT not installed! Run: pip install POT"
 echo "============================================"
 
-# PyTorch Lightning DDP: ONE process, it spawns GPU workers internally
-srun python train_ot_flow.py --config configs/ot_flow.ini
+# PyTorch Lightning DDP: Run Python directly, Lightning spawns GPU workers
+python train_ot_flow.py --config configs/ot_flow.ini

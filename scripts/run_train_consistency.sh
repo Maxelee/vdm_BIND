@@ -49,5 +49,5 @@ echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 nvidia-smi --query-gpu=name,memory.total --format=csv
 echo "============================================"
 
-# PyTorch Lightning DDP: ONE process, it spawns GPU workers internally
-srun python train_consistency.py --config configs/consistency.ini
+# PyTorch Lightning DDP: Run Python directly, Lightning spawns GPU workers
+python train_consistency.py --config configs/consistency.ini
