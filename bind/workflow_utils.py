@@ -891,6 +891,7 @@ class ModelManager:
         use_fourier_features = getattr(config, 'use_fourier_features', True)
         fourier_legacy = getattr(config, 'fourier_legacy', False)
         add_attention = getattr(config, 'add_attention', True)
+        use_param_conditioning = hparams.get('use_param_conditioning', getattr(config, 'use_param_conditioning', True))
         
         if verbose:
             print(f"[ModelManager] Interpolant Model Configuration:")
@@ -898,6 +899,7 @@ class ModelManager:
             print(f"  Stochastic: {use_stochastic_interpolant} (sigma={sigma})")
             print(f"  Sampling steps: {n_sampling_steps}")
             print(f"  Conditioning channels: {total_conditioning_channels}")
+            print(f"  Param conditioning: {use_param_conditioning}")
         
         # Create UNet
         from vdm.networks_clean import UNet
@@ -913,6 +915,7 @@ class ModelManager:
             use_fourier_features=use_fourier_features,
             fourier_legacy=fourier_legacy,
             add_attention=add_attention,
+            use_param_conditioning=use_param_conditioning,
         )
         
         # Wrap for velocity prediction
@@ -930,6 +933,7 @@ class ModelManager:
             use_stochastic_interpolant=use_stochastic_interpolant,
             sigma=sigma,
             x0_mode=x0_mode,
+            use_param_conditioning=use_param_conditioning,
         )
         
         if verbose:

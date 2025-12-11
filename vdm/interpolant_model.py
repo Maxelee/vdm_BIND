@@ -158,6 +158,7 @@ class Interpolant(nn.Module):
         x0: Tensor,
         x1: Tensor,
         conditioning: Optional[Tensor] = None,
+        param_conditioning: Optional[Tensor] = None,
         t: Optional[Tensor] = None,
     ) -> Tensor:
         """
@@ -169,6 +170,7 @@ class Interpolant(nn.Module):
             x0: Source (B, C, H, W) - zeros or noise
             x1: Target (B, C, H, W) - hydro output
             conditioning: Spatial conditioning (B, C_cond, H, W) - DM + large-scale
+            param_conditioning: Parameter conditioning (B, N_params) - cosmological parameters
             t: Optional time (B,). If None, uniformly sampled.
         
         Returns:
@@ -183,8 +185,8 @@ class Interpolant(nn.Module):
         # Compute true velocity
         v_true = self.get_velocity(x0, x1)
         
-        # Predict velocity
-        v_pred = self.velocity_model(t, x_t, conditioning)
+        # Predict velocity (pass param_conditioning to velocity model)
+        v_pred = self.velocity_model(t, x_t, conditioning, param_conditioning)
         
         # MSE loss
         loss = F.mse_loss(v_pred, v_true)
@@ -196,6 +198,7 @@ class Interpolant(nn.Module):
         self,
         x0: Tensor,
         conditioning: Optional[Tensor] = None,
+        param_conditioning: Optional[Tensor] = None,
         n_steps: int = 50,
         return_trajectory: bool = False,
     ) -> Union[Tensor, List[Tensor]]:
@@ -209,6 +212,7 @@ class Interpolant(nn.Module):
         Args:
             x0: Initial state (B, C, H, W) - typically zeros or noise
             conditioning: Spatial conditioning (B, C_cond, H, W)
+            param_conditioning: Parameter conditioning (B, N_params) - cosmological parameters
             n_steps: Number of integration steps
             return_trajectory: Whether to return full trajectory
         
@@ -223,8 +227,8 @@ class Interpolant(nn.Module):
         for i in range(n_steps):
             t = torch.full((x.shape[0],), i * dt, device=x.device, dtype=x.dtype)
             
-            # Predict velocity
-            v = self.velocity_model(t, x, conditioning)
+            # Predict velocity (pass param_conditioning)
+            v = self.velocity_model(t, x, conditioning, param_conditioning)
             
             # Euler step
             x = x + v * dt
@@ -249,7 +253,7 @@ class VelocityNetWrapper(nn.Module):
     Takes the existing UNet (designed for noise prediction) and adapts it
     for velocity prediction in the interpolant framework.
     
-    The network signature is: v = net(t, x_t, conditioning)
+    The network signature is: v = net(t, x_t, conditioning, param_conditioning)
     
     Args:
         net: Neural network (e.g., UNet from networks_clean.py)
@@ -273,6 +277,7 @@ class VelocityNetWrapper(nn.Module):
         t: Tensor,
         x: Tensor,
         conditioning: Optional[Tensor] = None,
+        param_conditioning: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Forward pass to predict velocity.
@@ -281,6 +286,7 @@ class VelocityNetWrapper(nn.Module):
             t: Time (B,) in [0, 1]
             x: Current state x_t (B, C_out, H, W)
             conditioning: Spatial conditioning (B, C_cond, H, W)
+            param_conditioning: Parameter conditioning (B, N_params) - cosmological params
         
         Returns:
             v: Predicted velocity (B, C_out, H, W)
@@ -294,10 +300,13 @@ class VelocityNetWrapper(nn.Module):
             zeros = torch.zeros(B, self.conditioning_channels, H, W, device=x.device, dtype=x.dtype)
             net_input = torch.cat([x, zeros], dim=1)
         
-        # Call network with time embedding
-        # The UNet expects (x, gamma) where gamma is log-SNR, but we use time directly
-        # We need to adapt the time input to match the network's expectations
-        output = self.net(net_input, t)
+        # Call network with time embedding and parameter conditioning
+        # The UNet expects: forward(z, g_t, conditioning=None, param_conditioning=None)
+        # - z: input tensor (net_input here)
+        # - g_t: time (we use t directly, UNet will rescale)
+        # - conditioning: spatial conditioning (already concatenated to net_input)
+        # - param_conditioning: cosmological parameters for FiLM conditioning
+        output = self.net(net_input, t, conditioning=None, param_conditioning=param_conditioning)
         
         return output
 
@@ -438,11 +447,12 @@ class LightInterpolant(LightningModule):
         # Initialize x0
         x0 = self._get_x0(x1, dm_condition)
         
-        # Compute loss
+        # Compute loss (pass param_conditioning for FiLM modulation)
         loss = self.interpolant.compute_loss(
             x0=x0,
             x1=x1,
             conditioning=conditioning,
+            param_conditioning=params,
         )
         
         # Log metrics
@@ -457,11 +467,12 @@ class LightInterpolant(LightningModule):
         # Initialize x0
         x0 = self._get_x0(x1, dm_condition)
         
-        # Compute loss
+        # Compute loss (pass param_conditioning for FiLM modulation)
         loss = self.interpolant.compute_loss(
             x0=x0,
             x1=x1,
             conditioning=conditioning,
+            param_conditioning=params,
         )
         
         self.log("val/loss", loss, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -473,6 +484,7 @@ class LightInterpolant(LightningModule):
         self,
         shape: Tuple[int, ...],
         conditioning: Optional[Tensor] = None,
+        param_conditioning: Optional[Tensor] = None,
         steps: Optional[int] = None,
         verbose: bool = True,
     ) -> Tensor:
@@ -482,6 +494,7 @@ class LightInterpolant(LightningModule):
         Args:
             shape: Shape of samples to generate (B, C, H, W)
             conditioning: Spatial conditioning tensor
+            param_conditioning: Parameter conditioning (B, N_params) - cosmological params
             steps: Number of sampling steps
             verbose: Show progress bar
         
@@ -499,10 +512,11 @@ class LightInterpolant(LightningModule):
         else:
             x0 = torch.zeros(shape, device=device)
         
-        # Generate samples
+        # Generate samples (pass param_conditioning for FiLM modulation)
         samples = self.interpolant.sample(
             x0=x0,
             conditioning=conditioning,
+            param_conditioning=param_conditioning,
             n_steps=steps,
         )
         
@@ -523,7 +537,7 @@ class LightInterpolant(LightningModule):
             conditioning: Spatial conditioning tensor (B, C_cond, H, W)
             batch_size: Number of samples to generate
             n_sampling_steps: Sampling steps
-            param_conditioning: Optional parameter conditioning (unused for now)
+            param_conditioning: Parameter conditioning (B, N_params) - cosmological params
             verbose: Show progress
         
         Returns:
@@ -532,10 +546,11 @@ class LightInterpolant(LightningModule):
         B, C_cond, H, W = conditioning.shape
         C_out = 3  # [DM, Gas, Stars]
         
-        # Generate samples
+        # Generate samples (pass param_conditioning for FiLM modulation)
         samples = self.sample(
             shape=(batch_size, C_out, H, W),
             conditioning=conditioning,
+            param_conditioning=param_conditioning,
             steps=n_sampling_steps or self.n_sampling_steps,
             verbose=verbose,
         )

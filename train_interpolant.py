@@ -257,6 +257,9 @@ def main():
     use_stochastic_interpolant = get_bool('use_stochastic_interpolant', False)
     sigma = get_float('sigma', 0.0)
     
+    # Parameter conditioning (cosmological parameters via FiLM)
+    use_param_conditioning = get_bool('use_param_conditioning', True)
+    
     # EMA parameters
     enable_ema = get_bool('enable_ema', True)
     ema_decay = get_float('ema_decay', 0.9999)
@@ -302,6 +305,7 @@ def main():
     print(f"  x0 mode: {x0_mode}")
     print(f"  Stochastic: {use_stochastic_interpolant} (sigma={sigma})")
     print(f"  Sampling steps: {n_sampling_steps}")
+    print(f"  Param conditioning: {use_param_conditioning}")
     
     print(f"\n📈 TRAINING:")
     print(f"  Batch size: {batch_size}")
@@ -331,6 +335,7 @@ def main():
         use_fourier_features=use_fourier_features,
         fourier_legacy=fourier_legacy,
         add_attention=add_attention,
+        use_param_conditioning=use_param_conditioning,
     )
     
     # Wrap UNet for velocity prediction
@@ -350,6 +355,7 @@ def main():
         use_stochastic_interpolant=use_stochastic_interpolant,
         sigma=sigma,
         x0_mode=x0_mode,
+        use_param_conditioning=use_param_conditioning,
     )
     
     # Print model summary

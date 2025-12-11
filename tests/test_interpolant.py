@@ -25,7 +25,7 @@ class TestInterpolant:
         
         # Create dummy velocity model
         class DummyVelocity(torch.nn.Module):
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 return torch.zeros_like(x)
         
         interpolant = Interpolant(velocity_model=DummyVelocity())
@@ -50,7 +50,7 @@ class TestInterpolant:
         from vdm.interpolant_model import Interpolant
         
         class DummyVelocity(torch.nn.Module):
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 return torch.zeros_like(x)
         
         interpolant = Interpolant(velocity_model=DummyVelocity())
@@ -69,7 +69,7 @@ class TestInterpolant:
         from vdm.interpolant_model import Interpolant
         
         class DummyVelocity(torch.nn.Module):
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 return torch.zeros_like(x)
         
         interpolant = Interpolant(velocity_model=DummyVelocity())
@@ -87,7 +87,7 @@ class TestInterpolant:
         from vdm.interpolant_model import Interpolant
         
         class DummyVelocity(torch.nn.Module):
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 return torch.zeros_like(x)
         
         interpolant = Interpolant(velocity_model=DummyVelocity(), use_stochastic_interpolant=False)
@@ -115,7 +115,7 @@ class TestLightInterpolant:
                 super().__init__()
                 self.conv = torch.nn.Conv2d(7, 3, 1)  # 3 output + 4 conditioning -> 3 output
             
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 if conditioning is not None:
                     x_in = torch.cat([x, conditioning], dim=1)
                 else:
@@ -142,7 +142,7 @@ class TestLightInterpolant:
                 super().__init__()
                 self.conv = torch.nn.Conv2d(7, 3, 1)
             
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 if conditioning is not None:
                     x_in = torch.cat([x, conditioning], dim=1)
                 else:
@@ -173,7 +173,7 @@ class TestLightInterpolant:
                 super().__init__()
                 self.conv = torch.nn.Conv2d(7, 3, 1)
             
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 if conditioning is not None:
                     x_in = torch.cat([x, conditioning], dim=1)
                 else:
@@ -207,13 +207,13 @@ class TestVelocityNetWrapper:
         """Test forward pass with conditioning."""
         from vdm.interpolant_model import VelocityNetWrapper
         
-        # Simple mock network
+        # Simple mock network that matches UNet signature
         class MockNet(torch.nn.Module):
             def __init__(self):
                 super().__init__()
                 self.conv = torch.nn.Conv2d(7, 3, 1)  # 3 + 4 -> 3
             
-            def forward(self, x, t):
+            def forward(self, x, t, conditioning=None, param_conditioning=None):
                 return self.conv(x)
         
         wrapper = VelocityNetWrapper(
@@ -242,7 +242,7 @@ class TestVelocityNetWrapper:
                 super().__init__()
                 self.conv = torch.nn.Conv2d(7, 3, 1)  # Still expects 7 channels
             
-            def forward(self, x, t):
+            def forward(self, x, t, conditioning=None, param_conditioning=None):
                 return self.conv(x)
         
         wrapper = VelocityNetWrapper(
@@ -270,7 +270,7 @@ class TestComputeLoss:
         
         class PerfectVelocity(torch.nn.Module):
             """Velocity model that predicts exact velocity."""
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 return torch.zeros_like(x)  # Will produce non-zero loss
         
         interpolant = Interpolant(velocity_model=PerfectVelocity())
@@ -295,7 +295,7 @@ class TestComputeLoss:
         true_velocity = x1_ref - x0_ref
         
         class PerfectVelocity(torch.nn.Module):
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 return true_velocity
         
         interpolant = Interpolant(velocity_model=PerfectVelocity())
@@ -317,7 +317,7 @@ class TestSampling:
         x1 = torch.ones(batch_size, 3, 16, 16) * 2.0  # Target is 2.0 everywhere
         
         class ExactVelocity(torch.nn.Module):
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 # True velocity is constant: x1 - x0 = 2.0
                 return torch.ones_like(x) * 2.0
         
@@ -334,7 +334,7 @@ class TestSampling:
         from vdm.interpolant_model import Interpolant
         
         class DummyVelocity(torch.nn.Module):
-            def forward(self, t, x, conditioning=None):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
                 return torch.zeros_like(x)
         
         interpolant = Interpolant(velocity_model=DummyVelocity())
