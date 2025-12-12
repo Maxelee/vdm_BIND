@@ -63,6 +63,9 @@ def train(
     resume_checkpoint=None,
     # Version
     version=None,
+    # Speed optimizations
+    precision="32",
+    compile_model=False,
 ):
     """
     Train the DSM Model.
@@ -171,9 +174,16 @@ def train(
         accumulate_grad_batches=accumulate_grad_batches,
         callbacks=callbacks_list,
         sync_batchnorm=True if num_devices > 1 else False,
-        precision="32",
+        precision=precision,  # "32", "16-mixed", or "bf16-mixed"
         use_distributed_sampler=True if num_devices > 1 else False,
     )
+    
+    # Optional: torch.compile for additional speedup
+    if compile_model and not cpu_only:
+        print("🔧 Compiling model with torch.compile...")
+        model = torch.compile(model)
+    
+    print(f"\n🚀 SPEED OPTIMIZATIONS: precision={precision}, compile={compile_model}")
 
     trainer.fit(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
 
@@ -317,6 +327,10 @@ if __name__ == "__main__":
         quantile_path = params.get('quantile_path', fallback=None)
         if quantile_path is not None and quantile_path.lower() in ['none', '']:
             quantile_path = None
+        
+        # Speed optimizations
+        precision = params.get('precision', fallback='32')
+        compile_model = params.getboolean('compile_model', fallback=False)
 
     except KeyError as e:
         raise KeyError(f"Missing required parameter in config: {e}")
@@ -423,4 +437,6 @@ if __name__ == "__main__":
         accumulate_grad_batches=accumulate_grad_batches,
         resume_checkpoint=cli_args.resume,
         version=version,
+        precision=precision,
+        compile_model=compile_model,
     )

@@ -42,6 +42,7 @@ def train(
     model,
     datamodule,
     model_name,
+    version=None,
     dataset='IllustrisTNG',
     boxsize=6.25,
     enable_early_stopping=True,
@@ -59,6 +60,9 @@ def train(
     ema_update_every=1,
     # Memory optimization
     accumulate_grad_batches=1,
+    # Speed optimizations
+    precision="32",
+    compile_model=False,
 ):
     """
     Train the Interpolant Model.
@@ -86,8 +90,8 @@ def train(
     
     ckpt_path = None
     
-    # TensorBoard logger
-    logger = TensorBoardLogger(tb_logs, name=model_name)
+    # TensorBoard logger - use explicit version to avoid nested directories
+    logger = TensorBoardLogger(tb_logs, name=model_name, version=version)
 
     # Checkpoint on val loss improvement
     val_checkpoint = ModelCheckpoint(
@@ -176,7 +180,18 @@ def train(
             callbacks=callbacks_list,
             accumulate_grad_batches=accumulate_grad_batches,
             limit_train_batches=limit_train_batches,
+            precision=precision,  # "32", "16-mixed", or "bf16-mixed"
         )
+    
+    # Optional: torch.compile for additional speedup
+    if compile_model and not cpu_only:
+        print("🔧 Compiling model with torch.compile...")
+        model = torch.compile(model)
+    
+    # Print speed optimization settings
+    print(f"\n🚀 SPEED OPTIMIZATIONS:")
+    print(f"  Precision: {precision}")
+    print(f"  torch.compile: {'enabled' if compile_model else 'disabled'}")
 
     # Start training
     print("\n" + "="*60)
@@ -296,6 +311,10 @@ def main():
     model_name = get_str('model_name', 'interpolant_3ch')
     version = get_int('version', 0)
     
+    # Speed optimizations
+    precision = get_str('precision', '32')
+    compile_model = get_bool('compile_model', False)
+    
     # Set seed
     seed_everything(seed)
     
@@ -397,7 +416,8 @@ def main():
     train(
         model=model,
         datamodule=datamodule,
-        model_name=f"{model_name}/version_{version}",
+        model_name=model_name,
+        version=version,
         dataset=dataset,
         boxsize=boxsize,
         enable_early_stopping=enable_early_stopping,
@@ -412,6 +432,8 @@ def main():
         ema_update_after_step=ema_update_after_step,
         ema_update_every=ema_update_every,
         accumulate_grad_batches=accumulate_grad_batches,
+        precision=precision,
+        compile_model=compile_model,
     )
 
 

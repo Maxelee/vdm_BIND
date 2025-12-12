@@ -38,6 +38,7 @@ def train(
     model,
     datamodule,
     model_name,
+    version=None,
     dataset='IllustrisTNG',
     boxsize=6.25,
     enable_early_stopping=True,
@@ -56,6 +57,9 @@ def train(
     ema_decay=0.9999,
     ema_update_after_step=0,
     ema_update_every=1,
+    # Speed optimizations
+    precision="32",
+    compile_model=False,
 ):
     """
     Train the CleanVDM model.
@@ -85,8 +89,8 @@ def train(
     
     ckpt_path = None
     
-    # TensorBoard logger
-    comet_logger = TensorBoardLogger(tb_logs, name=model_name)
+    # TensorBoard logger - use explicit version to avoid nested directories
+    comet_logger = TensorBoardLogger(tb_logs, name=model_name, version=version)
 
     # Checkpoint every time val/elbo improves
     val_checkpoint = ModelCheckpoint(
@@ -164,6 +168,14 @@ def train(
         )
         callbacks_list.append(ema_callback)
         print(f"✓ EMA enabled (decay={ema_decay}, warmup={ema_update_after_step} steps)")
+    
+    # Print speed optimization settings
+    print(f"\n🚀 SPEED OPTIMIZATIONS:")
+    print(f"  Precision: {precision}")
+    if compile_model:
+        print(f"  torch.compile: enabled (first epoch will be slower)")
+    else:
+        print(f"  torch.compile: disabled")
 
     # Auto-detect number of available devices and set strategy accordingly
     # NOTE: cpu_only is passed as a global or through kwargs in train() function
@@ -212,10 +224,15 @@ def train(
         gradient_clip_val=1.0,
         callbacks=callbacks_list,
         sync_batchnorm=True if num_devices > 1 else False,  # Only sync for DDP
-        # DDP Performance optimizations
-        precision="32",  # Use mixed precision for DDP (or full precision for CPU)
+        # Performance optimizations
+        precision=precision,  # "32", "16-mixed", or "bf16-mixed"
         use_distributed_sampler=True if num_devices > 1 else False,  # Only for DDP
     )
+    
+    # Optional: torch.compile for additional speedup (requires PyTorch 2.0+)
+    if compile_model:
+        print("🔧 Compiling model with torch.compile (first epoch will be slower)...")
+        model = torch.compile(model)
 
     trainer.fit(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
 
@@ -268,6 +285,11 @@ if __name__ == "__main__":
         field = params['field']
         tb_logs = params['tb_logs']
         model_name = params['model_name']
+        version = params.get('version', fallback=None)
+        if version is not None and version.lower() not in ['none', '']:
+            version = int(version)
+        else:
+            version = None
         param_norm_path = params.get('param_norm_path', fallback=None)
         
         # CleanVDM specific parameters
@@ -357,6 +379,10 @@ if __name__ == "__main__":
         quantile_path = params.get('quantile_path', fallback=None)
         if quantile_path is not None and quantile_path.lower() in ['none', '']:
             quantile_path = None
+        
+        # Speed optimizations
+        precision = params.get('precision', fallback='32')
+        compile_model = params.getboolean('compile_model', fallback=False)
 
     except KeyError as e:
         raise KeyError(f"Missing required parameter in config: {e}")
@@ -519,6 +545,7 @@ if __name__ == "__main__":
         model=vdm, 
         datamodule=dm, 
         model_name=model_name,
+        version=version,
         dataset=dataset,
         boxsize=boxsize,
         enable_early_stopping=enable_early_stopping,
@@ -537,4 +564,7 @@ if __name__ == "__main__":
         ema_decay=ema_decay,
         ema_update_after_step=ema_update_after_step,
         ema_update_every=ema_update_every,
+        # Speed optimizations
+        precision=precision,
+        compile_model=compile_model,
     )

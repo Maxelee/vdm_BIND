@@ -37,6 +37,7 @@ def train(
     model,
     datamodule,
     model_name,
+    version=None,
     dataset='IllustrisTNG',
     boxsize=6.25,
     enable_early_stopping=True,
@@ -54,6 +55,9 @@ def train(
     ema_update_every=1,
     # Memory optimization
     accumulate_grad_batches=1,
+    # Speed optimizations
+    precision="32",
+    compile_model=False,
 ):
     """
     Train the Score Model.
@@ -81,8 +85,8 @@ def train(
     
     ckpt_path = None
     
-    # TensorBoard logger
-    logger = TensorBoardLogger(tb_logs, name=model_name)
+    # TensorBoard logger - use explicit version to avoid nested directories
+    logger = TensorBoardLogger(tb_logs, name=model_name, version=version)
 
     # Checkpoint on val loss improvement
     val_checkpoint = ModelCheckpoint(
@@ -183,9 +187,16 @@ def train(
         accumulate_grad_batches=accumulate_grad_batches,
         callbacks=callbacks_list,
         sync_batchnorm=True if num_devices > 1 else False,
-        precision="32",
+        precision=precision,  # "32", "16-mixed", or "bf16-mixed"
         use_distributed_sampler=True if num_devices > 1 else False,
     )
+    
+    # Optional: torch.compile for additional speedup
+    if compile_model and not cpu_only:
+        print("🔧 Compiling model with torch.compile...")
+        model = torch.compile(model)
+    
+    print(f"\n🚀 SPEED OPTIMIZATIONS: precision={precision}, compile={compile_model}")
 
     trainer.fit(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
 
@@ -276,6 +287,11 @@ if __name__ == "__main__":
         # Logging
         tb_logs = params['tb_logs']
         model_name = params['model_name']
+        version = params.get('version', fallback=None)
+        if version is not None and version.lower() not in ['none', '']:
+            version = int(version)
+        else:
+            version = None
         
         # Callbacks
         enable_early_stopping = params.getboolean('enable_early_stopping', fallback=True)
@@ -308,6 +324,10 @@ if __name__ == "__main__":
         quantile_path = params.get('quantile_path', fallback=None)
         if quantile_path is not None and quantile_path.lower() in ['none', '']:
             quantile_path = None
+        
+        # Speed optimizations
+        precision = params.get('precision', fallback='32')
+        compile_model = params.getboolean('compile_model', fallback=False)
 
     except KeyError as e:
         raise KeyError(f"Missing required parameter in config: {e}")
@@ -434,6 +454,7 @@ if __name__ == "__main__":
         model=model, 
         datamodule=dm, 
         model_name=model_name,
+        version=version,
         dataset=dataset,
         boxsize=boxsize,
         enable_early_stopping=enable_early_stopping,
@@ -449,4 +470,6 @@ if __name__ == "__main__":
         ema_update_after_step=ema_update_after_step,
         ema_update_every=ema_update_every,
         accumulate_grad_batches=accumulate_grad_batches,
+        precision=precision,
+        compile_model=compile_model,
     )

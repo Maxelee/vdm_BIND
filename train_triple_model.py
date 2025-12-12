@@ -39,6 +39,7 @@ def train(
     model,
     datamodule,
     model_name,
+    version=None,
     dataset='IllustrisTNG',
     boxsize=6.25,
     enable_early_stopping=True,
@@ -52,6 +53,9 @@ def train(
     limit_train_batches=1.0,
     tb_logs='tb_logs',
     cpu_only=False,
+    # Speed optimizations
+    precision="32",
+    compile_model=False,
 ):
     """
     Train the Triple CleanVDM model.
@@ -77,8 +81,8 @@ def train(
     
     ckpt_path = None
     
-    # TensorBoard logger
-    comet_logger = TensorBoardLogger(tb_logs, name=model_name)
+    # TensorBoard logger - use explicit version to avoid nested directories
+    comet_logger = TensorBoardLogger(tb_logs, name=model_name, version=version)
 
     # Checkpoint every time val/elbo improves
     val_checkpoint = ModelCheckpoint(
@@ -186,11 +190,18 @@ def train(
         limit_train_batches=limit_train_batches,
         callbacks=callbacks_list,
         sync_batchnorm=True if num_devices > 1 else False,
-        precision="32",
+        precision=precision,  # "32", "16-mixed", or "bf16-mixed"
         use_distributed_sampler=True if num_devices > 1 else False,
         # Note: gradient_clip_val not supported with manual optimization
         # Gradient clipping can be done manually in training_step if needed
     )
+    
+    # Optional: torch.compile for additional speedup
+    if compile_model and not cpu_only:
+        print("🔧 Compiling model with torch.compile...")
+        model = torch.compile(model)
+    
+    print(f"\n🚀 SPEED OPTIMIZATIONS: precision={precision}, compile={compile_model}")
 
     trainer.fit(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
 
@@ -243,6 +254,11 @@ if __name__ == "__main__":
         field = params['field']
         tb_logs = params['tb_logs']
         model_name = params['model_name']
+        version = params.get('version', fallback=None)
+        if version is not None and version.lower() not in ['none', '']:
+            version = int(version)
+        else:
+            version = None
         param_norm_path = params.get('param_norm_path', fallback=None)
         
         # Triple VDM specific parameters
@@ -323,6 +339,10 @@ if __name__ == "__main__":
         quantile_path = params.get('quantile_path', fallback=None)
         if quantile_path is not None and quantile_path.lower() in ['none', '']:
             quantile_path = None
+        
+        # Speed optimizations
+        precision = params.get('precision', fallback='32')
+        compile_model = params.getboolean('compile_model', fallback=False)
 
     except KeyError as e:
         raise KeyError(f"Missing required parameter in config: {e}")
@@ -468,6 +488,7 @@ if __name__ == "__main__":
         model=vdm, 
         datamodule=dm, 
         model_name=model_name,
+        version=version,
         dataset=dataset,
         boxsize=boxsize,
         enable_early_stopping=enable_early_stopping,
@@ -481,4 +502,6 @@ if __name__ == "__main__":
         limit_train_batches=limit_train_batches,
         tb_logs=tb_logs,
         cpu_only=cli_args.cpu_only,
+        precision=precision,
+        compile_model=compile_model,
     )

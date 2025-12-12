@@ -489,8 +489,9 @@ class CleanVDM(nn.Module):
             total_loss: Loss per sample (B,)
             metrics: Dictionary of loss components and metrics
         """
-        # Bits per dimension factor
-        bpd_factor = 1 / (np.prod(x.shape[1:]) * np.log(2))
+        # Bits per dimension factor - use torch for compile compatibility
+        n_dims = x.shape[1] * x.shape[2] * x.shape[3]
+        bpd_factor = 1.0 / (n_dims * 0.6931471805599453)  # 0.693... = ln(2)
         
         # Sample diffusion times
         times = self.sample_times(x.shape[0], device=x.device).requires_grad_(True)
