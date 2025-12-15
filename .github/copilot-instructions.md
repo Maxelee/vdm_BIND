@@ -1,5 +1,14 @@
 # VDM-BIND Development Guidelines
 
+## Python Environment
+
+**Always use this virtual environment for running Python commands:**
+```bash
+source /mnt/home/mlee1/venvs/torch3/bin/activate
+```
+
+This environment has PyTorch, Lightning, and all required dependencies installed.
+
 ## Project Architecture
 
 This project has **two main pipelines** that share the `vdm/` core package:
