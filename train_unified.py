@@ -364,24 +364,107 @@ def train(
 # Parameter Loading Utilities
 # =============================================================================
 
-def load_param_normalization(param_norm_path):
-    """Load parameter normalization bounds from CSV file."""
+def load_param_normalization(param_norm_path, param_min_inline=None, param_max_inline=None, n_params_inline=None):
+    """
+    Load parameter normalization bounds from various sources.
+    
+    Supports:
+    1. CSV file: param_norm_path points to CSV with 'MinVal' and 'MaxVal' columns
+    2. JSON file: param_norm_path points to JSON with 'param_min', 'param_max' lists
+    3. Inline specification: param_min_inline and param_max_inline are comma-separated strings
+    4. Unconditional: param_norm_path='none' or empty returns (False, None, None, 0)
+    
+    Args:
+        param_norm_path: Path to CSV or JSON file, or 'none' for unconditional
+        param_min_inline: Comma-separated string of min values (e.g., "0.0,0.0,0.0")
+        param_max_inline: Comma-separated string of max values (e.g., "1.0,1.0,1.0")
+        n_params_inline: Explicit number of parameters (optional, for unconditional with n=0)
+    
+    Returns:
+        use_param_conditioning: bool
+        min_vals: np.array or None
+        max_vals: np.array or None
+        n_params: int
+        
+    Examples:
+        # Unconditional (n_params=0)
+        load_param_normalization('none') -> (False, None, None, 0)
+        
+        # From CSV
+        load_param_normalization('params.csv') -> (True, min_vals, max_vals, 35)
+        
+        # From JSON
+        load_param_normalization('params.json') -> (True, min_vals, max_vals, 6)
+        
+        # Inline specification
+        load_param_normalization(None, '0,0,0', '1,1,1') -> (True, [0,0,0], [1,1,1], 3)
+    """
+    # Check for inline specification first
+    if param_min_inline is not None and param_max_inline is not None:
+        try:
+            min_vals = np.array([float(x.strip()) for x in param_min_inline.split(',')])
+            max_vals = np.array([float(x.strip()) for x in param_max_inline.split(',')])
+            
+            if len(min_vals) != len(max_vals):
+                raise ValueError(f"param_min ({len(min_vals)}) and param_max ({len(max_vals)}) must have same length")
+            
+            n_params = len(min_vals)
+            print(f"✓ Parameter conditioning: {n_params} parameters (inline specification)")
+            return True, min_vals, max_vals, n_params
+        except Exception as e:
+            raise ValueError(f"Failed to parse inline parameters: {e}")
+    
+    # Check for explicit n_params=0 (unconditional)
+    if n_params_inline is not None and int(n_params_inline) == 0:
+        print("✓ Parameter conditioning: UNCONDITIONAL (n_params=0)")
+        return False, None, None, 0
+    
+    # Check for 'none' or empty path (unconditional)
     if param_norm_path is None or (isinstance(param_norm_path, str) and param_norm_path.lower() in ['none', '']):
+        print("✓ Parameter conditioning: UNCONDITIONAL (no param_norm_path)")
         return False, None, None, 0
     
     if not os.path.exists(param_norm_path):
         raise FileNotFoundError(f"Parameter norm path not found: {param_norm_path}")
     
-    import pandas as pd
-    minmax_df = pd.read_csv(param_norm_path)
-    min_vals = np.array(minmax_df['MinVal'])
-    max_vals = np.array(minmax_df['MaxVal'])
+    # Detect file format
+    if param_norm_path.endswith('.json'):
+        # JSON format
+        import json
+        with open(param_norm_path, 'r') as f:
+            param_config = json.load(f)
+        
+        if 'param_min' not in param_config or 'param_max' not in param_config:
+            raise ValueError("JSON file must contain 'param_min' and 'param_max' keys")
+        
+        min_vals = np.array(param_config['param_min'])
+        max_vals = np.array(param_config['param_max'])
+        
+        # Optional parameter names for documentation
+        param_names = param_config.get('param_names', None)
+        if param_names:
+            print(f"  Parameters: {param_names}")
+            
+    else:
+        # CSV format (default)
+        import pandas as pd
+        minmax_df = pd.read_csv(param_norm_path)
+        
+        # Support both 'MinVal'/'MaxVal' and 'min'/'max' column names
+        if 'MinVal' in minmax_df.columns:
+            min_vals = np.array(minmax_df['MinVal'])
+            max_vals = np.array(minmax_df['MaxVal'])
+        elif 'min' in minmax_df.columns:
+            min_vals = np.array(minmax_df['min'])
+            max_vals = np.array(minmax_df['max'])
+        else:
+            raise ValueError("CSV must contain 'MinVal'/'MaxVal' or 'min'/'max' columns")
     
     if len(min_vals) != len(max_vals):
         raise ValueError("Mismatch in number of min and max values")
     
     n_params = len(min_vals)
-    print(f"  Loaded {n_params} parameter bounds from {param_norm_path}")
+    print(f"✓ Parameter conditioning: {n_params} parameters from {param_norm_path}")
     return True, min_vals, max_vals, n_params
 
 
@@ -915,9 +998,18 @@ Examples:
     if not os.path.exists(data_root):
         raise FileNotFoundError(f"Data directory not found: {data_root}")
     
-    # Load parameter normalization
+    # Load parameter normalization (supports CSV, JSON, inline, or unconditional)
     param_norm_path = cfg.get_optional('param_norm_path')
-    use_param_conditioning, min_vals, max_vals, n_params = load_param_normalization(param_norm_path)
+    param_min_inline = cfg.get_optional('param_min')  # Inline min values (comma-separated)
+    param_max_inline = cfg.get_optional('param_max')  # Inline max values (comma-separated)
+    n_params_inline = cfg.get_optional('n_params')    # Explicit n_params (0 for unconditional)
+    
+    use_param_conditioning, min_vals, max_vals, n_params = load_param_normalization(
+        param_norm_path, 
+        param_min_inline, 
+        param_max_inline,
+        n_params_inline
+    )
     
     # Training parameters
     max_epochs = cfg.get_int('max_epochs', 100)

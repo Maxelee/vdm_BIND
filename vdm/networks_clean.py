@@ -656,36 +656,97 @@ class ASN1Embedding(nn.Module):
         return self.embedding(normalized_ASN1)
     
 class ParamEmbedding(nn.Module):
+    """
+    Parameter conditioning embedding for flexible cosmological/astrophysical parameters.
+    
+    Supports:
+    - n_params = 0: Returns zero embedding (unconditional generation)
+    - n_params > 0: Normalizes and embeds parameters
+    
+    Args:
+        embed_dim: Output embedding dimension
+        param_min: Minimum values for each parameter (list/array) or None for unconditional
+        param_max: Maximum values for each parameter (list/array) or None for unconditional
+        
+    Example:
+        # Unconditional (n_params=0)
+        embed = ParamEmbedding(192, None, None)
+        
+        # 6 custom parameters
+        embed = ParamEmbedding(192, [0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 1])
+        
+        # 35 CAMELS parameters (original)
+        embed = ParamEmbedding(192, min_vals, max_vals)
+    """
     def __init__(self, embed_dim, param_min, param_max):
         super().__init__()
-        self.min = torch.tensor(param_min, dtype=torch.float32)
-        self.max = torch.tensor(param_max, dtype=torch.float32)
-        self.Nparams = len(self.min)
+        self.embed_dim = embed_dim
         
-        # IMPROVED: Deeper, stronger network with normalization
-        self.embedding = nn.Sequential(
-            nn.Linear(self.Nparams, embed_dim * 2),  # Expand
-            nn.LayerNorm(embed_dim * 2),
-            nn.SiLU(),
-            nn.Dropout(0.1),
-            nn.Linear(embed_dim * 2, embed_dim * 2),
-            nn.LayerNorm(embed_dim * 2),
-            nn.SiLU(),
-            nn.Dropout(0.1),
-            nn.Linear(embed_dim * 2, embed_dim),  # Project to final dim
-            nn.LayerNorm(embed_dim),
-        )
+        # Handle unconditional case (n_params = 0)
+        if param_min is None or param_max is None or len(param_min) == 0:
+            self.Nparams = 0
+            self.min = None
+            self.max = None
+            self.embedding = None
+            print(f"⚙️  ParamEmbedding: Unconditional mode (n_params=0)")
+        else:
+            self.min = torch.tensor(param_min, dtype=torch.float32)
+            self.max = torch.tensor(param_max, dtype=torch.float32)
+            self.Nparams = len(self.min)
+            
+            if len(self.min) != len(self.max):
+                raise ValueError(f"param_min ({len(self.min)}) and param_max ({len(self.max)}) must have same length")
+            
+            # IMPROVED: Deeper, stronger network with normalization
+            self.embedding = nn.Sequential(
+                nn.Linear(self.Nparams, embed_dim * 2),  # Expand
+                nn.LayerNorm(embed_dim * 2),
+                nn.SiLU(),
+                nn.Dropout(0.1),
+                nn.Linear(embed_dim * 2, embed_dim * 2),
+                nn.LayerNorm(embed_dim * 2),
+                nn.SiLU(),
+                nn.Dropout(0.1),
+                nn.Linear(embed_dim * 2, embed_dim),  # Project to final dim
+                nn.LayerNorm(embed_dim),
+            )
+            print(f"⚙️  ParamEmbedding: Conditional mode (n_params={self.Nparams})")
     
     def forward(self, conditional_params):
+        """
+        Embed conditional parameters.
+        
+        Args:
+            conditional_params: (B, N_params) or (N_params,) tensor, or None for unconditional
+        
+        Returns:
+            (B, embed_dim) embedding tensor
+        """
+        # Handle unconditional case
+        if self.Nparams == 0 or conditional_params is None:
+            # Return zeros - the model will use only time conditioning
+            if conditional_params is not None:
+                batch_size = conditional_params.shape[0] if conditional_params.dim() > 1 else 1
+            else:
+                batch_size = 1
+            device = conditional_params.device if conditional_params is not None else 'cpu'
+            return torch.zeros(batch_size, self.embed_dim, device=device)
+        
         if conditional_params.dim() == 1:
             conditional_params = conditional_params.unsqueeze(0)
-        assert conditional_params.shape[-1] == self.Nparams, \
-            f"Expected last dim {self.Nparams}, got {conditional_params.shape[-1]}"
-        min = self.min.to(conditional_params.device)
-        max = self.max.to(conditional_params.device)
+        
+        # Validate parameter count
+        if conditional_params.shape[-1] != self.Nparams:
+            raise ValueError(
+                f"Expected {self.Nparams} parameters, got {conditional_params.shape[-1]}. "
+                f"Ensure your data and config specify the same number of parameters."
+            )
+        
+        min_vals = self.min.to(conditional_params.device)
+        max_vals = self.max.to(conditional_params.device)
         
         # Normalize to [0, 1]
-        normalized_conditional_params = (conditional_params - min) / (max - min + 1e-8)
+        normalized_conditional_params = (conditional_params - min_vals) / (max_vals - min_vals + 1e-8)
         normalized_conditional_params = torch.clamp(normalized_conditional_params, 0.0, 1.0)
         
         return self.embedding(normalized_conditional_params)

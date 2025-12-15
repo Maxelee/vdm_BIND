@@ -564,3 +564,153 @@ class TestDownsampleUpsample:
         out = updown(x, cond)
         
         assert out.shape == x.shape
+
+
+class TestParamEmbedding:
+    """Test flexible parameter embedding for conditional/unconditional generation."""
+    
+    def test_unconditional_none_params(self):
+        """Test ParamEmbedding with None params (unconditional mode)."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        embed = ParamEmbedding(embed_dim=192, param_min=None, param_max=None)
+        
+        assert embed.Nparams == 0
+        assert embed.embedding is None
+        
+        # Forward should return zeros
+        dummy_input = torch.randn(4, 5)  # Batch of 4, any param dim
+        out = embed(dummy_input)
+        assert out.shape == (4, 192)
+        assert torch.allclose(out, torch.zeros_like(out))
+    
+    def test_unconditional_empty_params(self):
+        """Test ParamEmbedding with empty param lists."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        embed = ParamEmbedding(embed_dim=192, param_min=[], param_max=[])
+        
+        assert embed.Nparams == 0
+        assert embed.embedding is None
+    
+    def test_unconditional_forward_with_none_input(self):
+        """Test unconditional forward with None input."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        embed = ParamEmbedding(embed_dim=128, param_min=None, param_max=None)
+        
+        # Forward with None should return zeros
+        out = embed(None)
+        assert out.shape == (1, 128)
+        assert torch.allclose(out, torch.zeros_like(out))
+    
+    def test_conditional_custom_params(self):
+        """Test ParamEmbedding with custom number of parameters."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        # 6 custom parameters
+        param_min = [0.1, 0.5, 0.0, 0.0, 0.1, 1e4]
+        param_max = [0.5, 1.2, 1.0, 1.0, 10.0, 1e6]
+        
+        embed = ParamEmbedding(embed_dim=192, param_min=param_min, param_max=param_max)
+        
+        assert embed.Nparams == 6
+        assert embed.embedding is not None
+        
+        # Forward with valid params
+        params = torch.rand(8, 6)  # Batch of 8
+        out = embed(params)
+        assert out.shape == (8, 192)
+    
+    def test_conditional_single_param(self):
+        """Test ParamEmbedding with single parameter."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        embed = ParamEmbedding(embed_dim=64, param_min=[0.0], param_max=[1.0])
+        
+        assert embed.Nparams == 1
+        
+        params = torch.rand(4, 1)
+        out = embed(params)
+        assert out.shape == (4, 64)
+    
+    def test_conditional_many_params(self):
+        """Test ParamEmbedding with many parameters (like CAMELS)."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        # 35 parameters like CAMELS
+        param_min = np.zeros(35).tolist()
+        param_max = np.ones(35).tolist()
+        
+        embed = ParamEmbedding(embed_dim=192, param_min=param_min, param_max=param_max)
+        
+        assert embed.Nparams == 35
+        
+        params = torch.rand(16, 35)
+        out = embed(params)
+        assert out.shape == (16, 192)
+    
+    def test_param_normalization(self):
+        """Test that parameters are normalized to [0,1]."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        param_min = [0.0, -10.0]
+        param_max = [1.0, 10.0]
+        
+        embed = ParamEmbedding(embed_dim=64, param_min=param_min, param_max=param_max)
+        
+        # Params at min should give different embedding than params at max
+        params_min = torch.tensor([[0.0, -10.0]])
+        params_max = torch.tensor([[1.0, 10.0]])
+        
+        out_min = embed(params_min)
+        out_max = embed(params_max)
+        
+        assert not torch.allclose(out_min, out_max)
+    
+    def test_param_count_mismatch_error(self):
+        """Test that mismatched param count raises error."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        embed = ParamEmbedding(embed_dim=64, param_min=[0, 0, 0], param_max=[1, 1, 1])
+        
+        # Wrong number of parameters should raise error
+        wrong_params = torch.rand(4, 5)  # 5 params instead of 3
+        
+        with pytest.raises(ValueError, match="Expected 3 parameters"):
+            embed(wrong_params)
+    
+    def test_param_min_max_length_mismatch(self):
+        """Test that mismatched min/max lengths raise error."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        with pytest.raises(ValueError, match="must have same length"):
+            ParamEmbedding(embed_dim=64, param_min=[0, 0], param_max=[1, 1, 1])
+    
+    def test_1d_input_handling(self):
+        """Test that 1D input is properly reshaped."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        embed = ParamEmbedding(embed_dim=64, param_min=[0, 0], param_max=[1, 1])
+        
+        # 1D input (single sample, no batch dim)
+        params_1d = torch.tensor([0.5, 0.5])
+        out = embed(params_1d)
+        
+        assert out.shape == (1, 64)  # Should add batch dimension
+    
+    def test_numpy_arrays_work(self):
+        """Test that numpy arrays work for param_min/max."""
+        from vdm.networks_clean import ParamEmbedding
+        
+        param_min = np.array([0.0, 0.0, 0.0])
+        param_max = np.array([1.0, 1.0, 1.0])
+        
+        embed = ParamEmbedding(embed_dim=64, param_min=param_min, param_max=param_max)
+        
+        assert embed.Nparams == 3
+        
+        params = torch.rand(2, 3)
+        out = embed(params)
+        assert out.shape == (2, 64)
+
