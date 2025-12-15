@@ -59,6 +59,9 @@ vdm_BIND/
 │   ├── consistency_model.py  # Consistency models
 │   ├── dit.py                # Diffusion Transformer architecture
 │   ├── dit_model.py          # DiT PyTorch Lightning wrapper
+│   ├── uncertainty.py        # Uncertainty quantification (MC Dropout, ensemble)
+│   ├── benchmark.py          # Standardized benchmark suite
+│   ├── ensemble.py           # Model ensemble support
 │   ├── astro_dataset.py      # Data loading
 │   ├── io_utils.py           # I/O utilities (load_simulation, project_particles_2d)
 │   └── validation_plots.py   # Validation plotting utilities
@@ -196,6 +199,9 @@ from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 | `vdm/consistency_model.py` | Consistency Models |
 | `vdm/dit.py` | Diffusion Transformer architecture (adaLN-Zero, patch embedding) |
 | `vdm/dit_model.py` | DiT PyTorch Lightning wrapper (LightDiTVDM) |
+| `vdm/uncertainty.py` | Uncertainty quantification: MC Dropout, multi-realization, calibration |
+| `vdm/benchmark.py` | Standardized benchmark suite: SSIM, power spectrum, mass metrics |
+| `vdm/ensemble.py` | Model ensemble support: weighted, channel-wise, diversity-promoting |
 | `vdm/io_utils.py` | Consolidated I/O: `load_simulation()`, `project_particles_2d()`, `load_halo_catalog()` |
 | `bind/bind.py` | BIND class: voxelize, extract, generate, paste |
 | `bind/workflow_utils.py` | ConfigLoader, ModelManager, sample() function |
