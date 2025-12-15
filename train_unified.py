@@ -11,6 +11,7 @@ It supports the following model types:
 - Interpolant (Flow Matching / Stochastic Interpolants)
 - OT-Flow (Optimal Transport Flow Matching)
 - Consistency (Consistency Models)
+- DiT (Diffusion Transformer)
 
 Usage:
     python train_unified.py --model vdm --config configs/clean_vdm_aggressive_stellar.ini
@@ -20,6 +21,7 @@ Usage:
     python train_unified.py --model interpolant --config configs/interpolant.ini
     python train_unified.py --model ot_flow --config configs/ot_flow.ini
     python train_unified.py --model consistency --config configs/consistency.ini
+    python train_unified.py --model dit --config configs/dit.ini
     
     # CPU testing mode (any model)
     python train_unified.py --model vdm --config configs/clean_vdm.ini --cpu_only
@@ -32,6 +34,7 @@ Model Type Reference:
     interpolant - Flow matching (LightInterpolant)
     ot_flow     - OT flow matching (LightOTFlow)
     consistency - Consistency models (LightConsistency)
+    dit         - DiT backbone (LightDiTVDM)
 """
 
 import os
@@ -59,7 +62,7 @@ torch.set_float32_matmul_precision("medium")
 # Model Type Constants
 # =============================================================================
 
-MODEL_TYPES = ['vdm', 'triple', 'ddpm', 'dsm', 'interpolant', 'ot_flow', 'consistency']
+MODEL_TYPES = ['vdm', 'triple', 'ddpm', 'dsm', 'interpolant', 'ot_flow', 'consistency', 'dit']
 
 DEFAULT_CONFIGS = {
     'vdm': 'configs/clean_vdm_aggressive_stellar.ini',
@@ -69,6 +72,7 @@ DEFAULT_CONFIGS = {
     'interpolant': 'configs/interpolant.ini',
     'ot_flow': 'configs/ot_flow.ini',
     'consistency': 'configs/consistency.ini',
+    'dit': 'configs/dit.ini',
 }
 
 
@@ -920,6 +924,67 @@ def create_consistency_model(cfg, min_vals, max_vals, use_param_conditioning):
     return model, 'val/loss'
 
 
+def create_dit_model(cfg, min_vals, max_vals, use_param_conditioning):
+    """Create DiT (Diffusion Transformer) model."""
+    from vdm.dit_model import LightDiTVDM
+    from vdm.dit import create_dit_model as _create_dit
+    
+    conditioning_channels = cfg.get_int('conditioning_channels', 1)
+    large_scale_channels = cfg.get_int('large_scale_channels', 3)
+    img_size = cfg.get_int('img_size', 128)
+    n_params = cfg.get_int('n_params', 35) if use_param_conditioning else 0
+    
+    # Get DiT variant or manual params
+    dit_variant = cfg.get_str('dit_variant', 'DiT-B/4')
+    
+    # Check if using variant or manual params
+    hidden_size = cfg.get_optional('hidden_size', None)
+    if hidden_size is not None:
+        # Manual specification
+        print(f"\nCreating custom DiT model...")
+        from vdm.dit import DiT
+        dit = DiT(
+            img_size=img_size,
+            patch_size=cfg.get_int('patch_size', 4),
+            in_channels=3,
+            out_channels=3,
+            hidden_size=cfg.get_int('hidden_size', 768),
+            depth=cfg.get_int('depth', 12),
+            num_heads=cfg.get_int('num_heads', 12),
+            mlp_ratio=cfg.get_float('mlp_ratio', 4.0),
+            n_params=n_params,
+            dropout=cfg.get_float('dropout', 0.0),
+            conditioning_channels=conditioning_channels,
+            large_scale_channels=large_scale_channels,
+        )
+    else:
+        # Use variant
+        print(f"\nCreating {dit_variant} model...")
+        dit = _create_dit(
+            dit_variant,
+            img_size=img_size,
+            n_params=n_params,
+            conditioning_channels=conditioning_channels,
+            large_scale_channels=large_scale_channels,
+            dropout=cfg.get_float('dropout', 0.0),
+        )
+    
+    model = LightDiTVDM(
+        dit_model=dit,
+        learning_rate=cfg.get_float('learning_rate', 1e-4),
+        weight_decay=cfg.get_float('weight_decay', 1e-5),
+        gamma_min=cfg.get_float('gamma_min', -13.3),
+        gamma_max=cfg.get_float('gamma_max', 5.0),
+        n_sampling_steps=cfg.get_int('n_sampling_steps', 256),
+        loss_type=cfg.get_str('loss_type', 'mse'),
+        lr_scheduler=cfg.get_str('lr_scheduler', 'cosine'),
+        warmup_steps=cfg.get_int('warmup_steps', 1000),
+        image_shape=(3, img_size, img_size),
+    )
+    
+    return model, 'val/loss'
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -1109,6 +1174,8 @@ Examples:
         model, early_stopping_monitor = create_ot_flow_model(cfg, min_vals, max_vals, use_param_conditioning)
     elif args.model == 'consistency':
         model, early_stopping_monitor = create_consistency_model(cfg, min_vals, max_vals, use_param_conditioning)
+    elif args.model == 'dit':
+        model, early_stopping_monitor = create_dit_model(cfg, min_vals, max_vals, use_param_conditioning)
     else:
         raise ValueError(f"Unknown model type: {args.model}")
     
