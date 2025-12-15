@@ -172,7 +172,18 @@ TRAIN_DATA_ROOT/
 
 ### 3.2 Configuration Files
 
-Training is controlled via INI files in `configs/`. Key configuration file: `configs/clean_vdm_aggressive_stellar.ini`
+Training is controlled via INI files in `configs/`. Each model type has its own configuration file:
+
+| Model Type | Config File | Description |
+|------------|-------------|-------------|
+| VDM | `clean_vdm_aggressive_stellar.ini` | 3-channel Variational Diffusion Model |
+| Triple VDM | `clean_vdm_triple.ini` | 3 independent single-channel VDMs |
+| DDPM | `ddpm.ini` | Denoising Diffusion Probabilistic Model |
+| DSM | `dsm.ini` | Denoising Score Matching |
+| Interpolant | `interpolant.ini` | Flow Matching |
+| Stochastic Interpolant | `stochastic_interpolant.ini` | Stochastic Flow Matching |
+| OT Flow | `ot_flow.ini` | Optimal Transport Flow Matching |
+| Consistency | `consistency.ini` | Consistency Models |
 
 #### Training Hyperparameters
 
@@ -235,15 +246,43 @@ Training is controlled via INI files in `configs/`. Key configuration file: `con
 
 ### 3.3 Running Training
 
-**Interactive (for testing):**
+All model types are trained using the unified training script `train_unified.py`.
+
+**Interactive Training (single model):**
 ```bash
 source /mnt/home/mlee1/venvs/torch3/bin/activate
-python train_model_clean.py --config configs/clean_vdm_aggressive_stellar.ini
+
+# Train VDM
+python train_unified.py --model vdm --config configs/clean_vdm_aggressive_stellar.ini
+
+# Train DDPM
+python train_unified.py --model ddpm --config configs/ddpm.ini
+
+# Train with CPU only (for testing)
+python train_unified.py --model vdm --config configs/clean_vdm_aggressive_stellar.ini --cpu_only
 ```
 
-**On SLURM cluster:**
+**Available model types:** `vdm`, `triple`, `ddpm`, `dsm`, `interpolant`, `ot_flow`, `consistency`
+
+**On SLURM cluster (single model):**
 ```bash
-sbatch scripts/run_train.sh
+# Edit scripts/run_train_unified.sh to set MODEL and CONFIG
+sbatch scripts/run_train_unified.sh
+```
+
+**Train all models as SLURM array job:**
+```bash
+# Submits all 8 model types as an array job
+sbatch scripts/run_train_unified.sh
+```
+
+**Monitor training progress:**
+```bash
+# Check job status and training metrics
+./scripts/monitor_training.sh
+
+# View TensorBoard logs
+tensorboard --logdir=/mnt/home/mlee1/ceph/tb_logs3/
 ```
 
 ### 3.4 Training Outputs
@@ -631,15 +670,20 @@ Total: 142 tests, all passing
 ```
 vdm_BIND/
 ├── config.py                 # Centralized path configuration
-├── train_model_clean.py      # Training entry point (3-channel)
-├── train_triple_model.py     # Training entry point (triple)
+├── train_unified.py          # Unified training for ALL model types
+├── train_model_clean.py      # Legacy VDM training (kept for reference)
 ├── run_bind_unified.py       # BIND inference entry point
 ├── run_tests.py              # Test runner with validation
 ├── setup.py                  # Package installation
-├── vdm/                      # Core VDM package
+├── vdm/                      # Core model package
 │   ├── networks_clean.py     # UNet architecture
 │   ├── vdm_model_clean.py    # LightCleanVDM Lightning module
 │   ├── vdm_model_triple.py   # Triple independent VDMs
+│   ├── ddpm_model.py         # DDPM/NCSNpp model
+│   ├── dsm_model.py          # Denoising Score Matching
+│   ├── interpolant_model.py  # Flow Matching
+│   ├── ot_flow_model.py      # OT Flow Matching
+│   ├── consistency_model.py  # Consistency Models
 │   ├── astro_dataset.py      # PyTorch dataset
 │   ├── augmentation.py       # Data augmentation
 │   ├── callbacks.py          # Training callbacks

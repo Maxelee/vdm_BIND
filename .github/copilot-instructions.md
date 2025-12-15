@@ -15,14 +15,20 @@ This project has **two main pipelines** that share the `vdm/` core package:
 
 ### Training Pipeline (generative models)
 ```
-train_model_clean.py → vdm/vdm_model_clean.py → vdm/networks_clean.py   # VDM
-train_triple_model.py → vdm/vdm_model_triple.py → vdm/networks_clean.py  # Triple VDM
-train_ddpm.py → vdm/ddpm_model.py → score_models                        # DDPM
-train_interpolant.py → vdm/interpolant_model.py → vdm/networks_clean.py # Flow Matching
+train_unified.py → vdm/*_model.py → vdm/networks_clean.py
 ```
-- **Purpose**: Train generative models to learn DMO → Hydro mapping
-- **Input**: Halo-centric cutouts (128×128) with conditional parameters
-- **Output**: 3-channel predictions [DM_hydro, Gas, Stars]
+**Supported model types** (via `--model` flag):
+- `vdm` → 3-channel VDM (LightCleanVDM)
+- `triple` → 3 independent single-channel VDMs (LightTripleVDM)
+- `ddpm` → DDPM/NCSNpp (score_models package)
+- `dsm` → Denoising Score Matching
+- `interpolant` → Flow Matching / Stochastic Interpolants
+- `ot_flow` → Optimal Transport Flow Matching
+- `consistency` → Consistency Models
+
+**Purpose**: Train generative models to learn DMO → Hydro mapping
+**Input**: Halo-centric cutouts (128×128) with conditional parameters
+**Output**: 3-channel predictions [DM_hydro, Gas, Stars]
 
 ### Inference Pipeline (BIND)
 ```
@@ -37,41 +43,41 @@ bind_predict.py → bind/bind.py (user-friendly CLI)
 ```
 vdm_BIND/
 ├── config.py                 # Centralized path configuration (env vars)
-├── train_model_clean.py      # Training entry point (3-channel VDM)
-├── train_triple_model.py     # Training entry point (triple independent VDM)
-├── train_ddpm.py             # Training entry point (DDPM/NCSNpp)
-├── train_interpolant.py      # Training entry point (flow matching)
+├── train_unified.py          # Unified training for ALL model types
+├── train_model_clean.py      # Legacy VDM training (kept for reference)
 ├── run_bind_unified.py       # BIND inference on simulation suites
 ├── bind_predict.py           # User-friendly BIND CLI for custom simulations
-├── vdm/                      # Core VDM package
+├── vdm/                      # Core model package
 │   ├── networks_clean.py     # UNet architecture
 │   ├── vdm_model_clean.py    # 3-channel LightCleanVDM
 │   ├── vdm_model_triple.py   # 3 independent VDMs
 │   ├── ddpm_model.py         # DDPM/NCSNpp using score_models
+│   ├── dsm_model.py          # Denoising Score Matching
 │   ├── interpolant_model.py  # Flow matching / stochastic interpolants
+│   ├── ot_flow_model.py      # Optimal transport flow matching
+│   ├── consistency_model.py  # Consistency models
 │   ├── astro_dataset.py      # Data loading
-│   ├── io_utils.py           # Consolidated I/O utilities (load_simulation, project_particles_2d)
+│   ├── io_utils.py           # I/O utilities (load_simulation, project_particles_2d)
 │   └── validation_plots.py   # Validation plotting utilities
 ├── bind/                     # BIND inference package
 │   ├── bind.py               # Main BIND class
 │   ├── workflow_utils.py     # ConfigLoader, ModelManager, sample()
 │   ├── analyses.py           # Evaluation utilities
-│   └── power_spec.py         # Consolidated power spectrum functions
-├── configs/                  # Training configurations
+│   └── power_spec.py         # Power spectrum functions
+├── configs/                  # Training configurations (one per model type)
 ├── scripts/                  # SLURM job scripts
+│   ├── run_train_unified.sh  # Array job for all models
+│   ├── run_all_models.sh     # Submit all training jobs
+│   └── monitor_training.sh   # Monitor running jobs
 ├── data/                     # Normalization stats & quantile transformer
 ├── tests/                    # Unit & integration tests
 ├── analysis/                 # Paper plots and notebooks
-│   ├── paper_utils.py        # Shared analysis functions (radial profiles, plotting)
-│   └── notebooks/            # Paper figures + training validation
-│       ├── 01-08_*.ipynb     # Paper analysis notebooks
-│       ├── training_loss_curves.ipynb     # TensorBoard loss visualization
-│       ├── training_validation.ipynb      # Test set generation & profiles
-│       └── bind_power_spectrum.ipynb      # BIND power spectrum analysis
+│   ├── paper_utils.py        # Shared analysis functions
+│   └── notebooks/            # Analysis notebooks
 └── data_generation/          # Training data processing
-    ├── README.md             # Comprehensive data generation docs
-    ├── process_simulations.py  # Main MPI processing script (uses vdm.io_utils)
-    └── add_large_scale.py    # Multi-scale context extraction
+    ├── README.md             # Data generation documentation
+    ├── process_simulations.py
+    └── add_large_scale.py
 ```
 
 ## Consolidated Utility Modules
@@ -176,11 +182,15 @@ from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 | File | Purpose |
 |------|---------|
 | `config.py` | Centralized path configuration with environment variable support |
+| `train_unified.py` | **Unified training script for all model types** |
 | `vdm/networks_clean.py` | UNet architecture with Fourier features, attention, cross-attention |
 | `vdm/vdm_model_clean.py` | 3-channel VDM with focal loss, per-channel weighting |
 | `vdm/vdm_model_triple.py` | 3 independent single-channel VDMs |
 | `vdm/ddpm_model.py` | DDPM/NCSNpp wrapper using score_models package |
 | `vdm/interpolant_model.py` | Flow matching / stochastic interpolants (LightInterpolant) |
+| `vdm/dsm_model.py` | Denoising Score Matching |
+| `vdm/ot_flow_model.py` | Optimal Transport Flow Matching |
+| `vdm/consistency_model.py` | Consistency Models |
 | `vdm/io_utils.py` | Consolidated I/O: `load_simulation()`, `project_particles_2d()`, `load_halo_catalog()` |
 | `bind/bind.py` | BIND class: voxelize, extract, generate, paste |
 | `bind/workflow_utils.py` | ConfigLoader, ModelManager, sample() function |
@@ -216,10 +226,13 @@ python run_tests.py --validate
 ### Training Pipeline
 ```bash
 # Quick test (CPU, small batches)
-python train_model_clean.py --config configs/clean_vdm_aggressive_stellar.ini --cpu_only
+python train_unified.py --model vdm --config configs/clean_vdm_aggressive_stellar.ini --cpu_only
 
-# Full training
-sbatch scripts/run_train.sh
+# Train specific model type
+python train_unified.py --model ddpm --config configs/ddpm.ini
+
+# Full training on SLURM (all 8 models as array job)
+sbatch scripts/run_train_unified.sh
 ```
 
 ### BIND Pipeline
@@ -266,21 +279,43 @@ Training scripts save checkpoints in two formats (both backward compatible):
 
 ## Adding New Features
 
-1. **New loss function**: Add to `vdm/vdm_model_clean.py` in `get_diffusion_loss()`
-2. **New architecture component**: Add to `vdm/networks_clean.py`
-3. **New analysis**: Add notebook to `analysis/notebooks/`, use `analysis/paper_utils.py`
-4. **New simulation suite**: Add `get_{suite}_simulation_info()` in `run_bind_unified.py`
+1. **New model type**: Add to `vdm/` as `{model}_model.py`, update `train_unified.py` MODEL_TYPES
+2. **New loss function**: Add to `vdm/vdm_model_clean.py` in `get_diffusion_loss()`
+3. **New architecture component**: Add to `vdm/networks_clean.py`
+4. **New analysis**: Add notebook to `analysis/notebooks/`, use `analysis/paper_utils.py`
+5. **New simulation suite**: Add `get_{suite}_simulation_info()` in `run_bind_unified.py`
 
-## Branch Strategy
+## Training Quick Reference
 
-- **main**: Stable production VDM code (clean + triple models)
-- **ddpm**: Adds DDPM/score_models integration (builds on main)
-- **interpolants**: Adds flow matching / stochastic interpolants (builds on ddpm)
+### Run Training for Any Model
+```bash
+# Activate environment
+source /mnt/home/mlee1/venvs/torch3/bin/activate
 
-### Branch Relationship
+# Train a specific model (interactive)
+python train_unified.py --model MODEL_TYPE --config configs/CONFIG.ini
+
+# MODEL_TYPE options: vdm, triple, ddpm, dsm, interpolant, ot_flow, consistency
 ```
-main (VDM clean, VDM triple)
-  └── ddpm (+ddpm_model.py, +train_ddpm.py, +configs/ddpm.ini)
-        └── interpolants (+interpolant_model.py, +train_interpolant.py, +configs/interpolant.ini, +MODEL_COMPARISON.md)
+
+### Config Files
+| Model | Config File |
+|-------|-------------|
+| VDM (3-channel) | `configs/clean_vdm_aggressive_stellar.ini` |
+| Triple VDM | `configs/clean_vdm_triple.ini` |
+| DDPM | `configs/ddpm.ini` |
+| DSM | `configs/dsm.ini` |
+| Interpolant | `configs/interpolant.ini` |
+| Stochastic Interpolant | `configs/stochastic_interpolant.ini` |
+| OT Flow | `configs/ot_flow.ini` |
+| Consistency | `configs/consistency.ini` |
+
+### SLURM Training
+```bash
+# Submit all 8 models as array job
+sbatch scripts/run_train_unified.sh
+
+# Monitor running jobs
+./scripts/monitor_training.sh
 ```
 
