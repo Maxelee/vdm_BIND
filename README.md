@@ -167,8 +167,15 @@ TRAIN_DATA_ROOT/
 - `dm_hydro`: Hydro DM density (128×128)  
 - `gas`: Gas density (128×128)
 - `star`: Stellar density (128×128)
-- `conditional_params`: 15 cosmological/astrophysical parameters
+- `conditional_params`: Cosmological/astrophysical parameters (up to 35 for CAMELS LH)
 - `large_scale_dm_*`: Multi-scale context maps (optional)
+
+**Parameter Conditioning:**
+The model can be conditioned on cosmological and astrophysical parameters. CAMELS provides:
+- 6 parameters for CV/1P sets: Ωm, σ8, A_SN1, A_AGN1, A_SN2, A_AGN2
+- Up to 35 parameters for SB35 Latin Hypercube set
+
+Set `n_params` in your config to match your data (or 0 for unconditional generation).
 
 ### 3.2 Configuration Files
 
@@ -699,6 +706,7 @@ vdm_BIND/
 ├── configs/                  # Configuration files
 ├── scripts/                  # SLURM job scripts
 ├── data/                     # Normalization statistics
+├── docs/                     # Additional documentation
 ├── tests/                    # Test suite
 ├── analysis/                 # Paper plots and notebooks
 └── data_generation/          # Training data processing
@@ -706,11 +714,28 @@ vdm_BIND/
 
 ---
 
-## Branch Strategy
+## 8. Contributing
 
-- **main**: Stable production code
-- **astro_params**: 3-channel VDM with cosmological parameter conditioning
-- **seperate_training**: Triple independent VDMs (one per output channel)
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Development Setup
+
+```bash
+# Clone and install in development mode
+git clone https://github.com/Maxelee/vdm_BIND.git
+cd vdm_BIND
+pip install -e ".[dev]"
+
+# Run tests
+pytest tests/ -v
+```
+
+### Branch Naming Convention
+
+- `feature/*` - New features
+- `fix/*` - Bug fixes  
+- `docs/*` - Documentation updates
+- `test/*` - Testing improvements
 
 ---
 
