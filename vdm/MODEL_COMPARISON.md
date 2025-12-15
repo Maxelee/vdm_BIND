@@ -1,6 +1,6 @@
 # Generative Model Comparison for VDM-BIND
 
-This document provides a comprehensive comparison of the eight generative modeling approaches implemented in VDM-BIND for learning the DMO → Hydro mapping. We explain the mathematical foundations, practical tradeoffs, and our recommendations for the best approach.
+This document provides a comprehensive comparison of the nine generative modeling approaches implemented in VDM-BIND for learning the DMO → Hydro mapping. We explain the mathematical foundations, practical tradeoffs, and our recommendations for the best approach.
 
 **Authors**: VDM-BIND Development Team  
 **Last Updated**: 2025
@@ -21,7 +21,7 @@ This document provides a comprehensive comparison of the eight generative modeli
 
 ## Overview
 
-The VDM-BIND project aims to learn a mapping from Dark Matter Only (DMO) N-body simulations to full Hydrodynamical simulations, predicting three baryonic fields: [Dark Matter (hydro), Gas, Stars]. We explore eight generative modeling approaches:
+The VDM-BIND project aims to learn a mapping from Dark Matter Only (DMO) N-body simulations to full Hydrodynamical simulations, predicting three baryonic fields: [Dark Matter (hydro), Gas, Stars]. We explore nine generative modeling approaches:
 
 | Model | File | Approach | Key Innovation |
 |-------|------|----------|----------------|
@@ -33,8 +33,9 @@ The VDM-BIND project aims to learn a mapping from Dark Matter Only (DMO) N-body 
 | **Stochastic Interpolant** | `interpolant_model.py` | Flow matching + noise | Adds noise during interpolation for diversity |
 | **Consistency** | `consistency_model.py` | Consistency models | Single-step or few-step sampling |
 | **OT Flow** | `ot_flow_model.py` | OT flow matching | Optimal transport coupling for straighter paths |
+| **DiT** | `dit_model.py` | Diffusion Transformer | Patch-based transformer with adaLN-Zero |
 
-Why explore multiple approaches? Each method makes different assumptions about the underlying data distribution and learning process. By implementing all six, we can empirically determine which best captures the complex DMO → Hydro relationship, where:
+Why explore multiple approaches? Each method makes different assumptions about the underlying data distribution and learning process. By implementing all nine, we can empirically determine which best captures the complex DMO → Hydro relationship, where:
 - The mapping is **many-to-one** (multiple hydro realizations per DMO)
 - The **stellar field is extremely sparse** (challenging for MSE-based methods)
 - We need **fast inference** for application to large cosmological volumes
@@ -280,6 +281,78 @@ $$\mathcal{L}_{\text{OT-FM}} = \mathbb{E}_{t, (x_0, x_1) \sim \pi^*} \left[ \| v
 
 ---
 
+### 6. Diffusion Transformer (DiT) (Peebles & Xie, 2023)
+
+The Diffusion Transformer replaces the traditional UNet backbone with a transformer architecture, achieving state-of-the-art results on image generation.
+
+#### Key Architecture Components
+
+**Patch Embedding**: Convert 2D image into sequence of patch tokens:
+
+$$\text{patches} = \text{patchify}(x) \in \mathbb{R}^{N \times (P^2 \cdot C)}$$
+
+where $N = (H/P) \times (W/P)$ is the number of patches, $P$ is patch size, and $C$ is channels.
+
+**Positional Embedding**: 2D sinusoidal position embeddings to preserve spatial information:
+
+$$\text{PE}_{(i,j)} = [\sin, \cos](\text{pos}_i / 10000^{2k/d}) \oplus [\sin, \cos](\text{pos}_j / 10000^{2k/d})$$
+
+**adaLN-Zero (Adaptive Layer Normalization)**:
+
+Instead of cross-attention, DiT conditions on timestep and class via adaptive layer normalization:
+
+$$\text{adaLN-Zero}(h, c) = \gamma_c \odot \text{LayerNorm}(h) + \beta_c$$
+
+where $(\gamma, \beta, \alpha)$ are regressed from conditioning $c = c_t + c_{\text{params}}$.
+
+The "Zero" initialization sets $\alpha$ gates to zero initially, ensuring the transformer starts as identity:
+
+$$h' = h + \alpha \cdot \text{Attn}(\text{adaLN}(h))$$
+
+#### DiT Block
+
+Each transformer block consists of:
+1. **adaLN** → Multi-head Self-Attention → **scale by $\alpha_1$**
+2. **adaLN** → MLP (GELU) → **scale by $\alpha_2$**
+
+$$\text{DiTBlock}(h, c) = h + \alpha_2 \cdot \text{MLP}(\text{adaLN}_2(h + \alpha_1 \cdot \text{Attn}(\text{adaLN}_1(h, c)), c))$$
+
+#### Final Layer
+
+The final layer uses adaLN followed by a linear projection to output channels:
+
+$$\text{output} = \text{Linear}(\text{adaLN}(h)) \rightarrow \text{unpatchify} \rightarrow \text{image}$$
+
+#### Training Objective
+
+Same as standard diffusion models - predict noise or clean data:
+
+$$\mathcal{L}_{\text{DiT}} = \mathbb{E}_{t, x_0, \epsilon} \left[ \| \epsilon - \text{DiT}_\theta(z_t, t, c) \|^2 \right]$$
+
+#### Model Variants
+
+| Variant | Hidden Dim | Depth | Heads | Params |
+|---------|------------|-------|-------|--------|
+| DiT-S   | 384        | 12    | 6     | ~33M   |
+| DiT-B   | 768        | 12    | 12    | ~130M  |
+| DiT-L   | 1024       | 24    | 16    | ~458M  |
+| DiT-XL  | 1152       | 28    | 16    | ~675M  |
+
+#### Key Advantages
+
+- **Scalability**: Transformers scale better than UNets with data/compute
+- **Global attention**: Every patch attends to every other patch
+- **Simple architecture**: No skip connections, encoder-decoder structure
+- **State-of-the-art**: Best FID scores on ImageNet at publication
+
+#### Trade-offs
+
+- **Memory**: O(N²) attention complexity for N patches
+- **Training cost**: Typically needs more iterations than UNet
+- **Patch artifacts**: May require careful patch size selection
+
+---
+
 ## Model Implementations
 
 ### `vdm_model_clean.py` - Joint 3-Channel VDM
@@ -422,6 +495,40 @@ class LightOTFlow(LightningModule):
 
 ---
 
+### `dit_model.py` - Diffusion Transformer
+
+```python
+class LightDiTVDM(LightningModule):
+    """
+    Diffusion Transformer with VDM training:
+    - Patch-based transformer architecture
+    - adaLN-Zero conditioning on timestep + params
+    - Spatial conditioning via cross-attention
+    - Configurable depth/width (S/B/L/XL variants)
+    """
+```
+
+**Key Features**:
+- **Patch embedding**: Converts 2D images to token sequences
+- **adaLN-Zero**: Adaptive layer norm with zero-initialized output gates
+- **2D positional embeddings**: Sinusoidal embeddings for spatial awareness
+- **Spatial conditioning**: Cross-attention to conditioning maps (DM fields)
+- **Scalable**: Pre-defined S/B/L/XL variants for different compute budgets
+- **VDM loss**: Same loss formulation as VDM for fair comparison
+
+**Model Variants**:
+
+| Variant | Hidden | Depth | Heads | Parameters |
+|---------|--------|-------|-------|------------|
+| DiT-S   | 384    | 12    | 6     | ~33M       |
+| DiT-B   | 768    | 12    | 12    | ~130M      |
+| DiT-L   | 1024   | 24    | 16    | ~458M      |
+| DiT-XL  | 1152   | 28    | 16    | ~675M      |
+
+**When to use**: When scaling to larger models, when global attention helps (e.g., for long-range correlations in fields), or to benchmark transformer vs. UNet performance.
+
+---
+
 ## Key Differences
 
 ### 1. What the Network Learns
@@ -433,6 +540,7 @@ class LightOTFlow(LightningModule):
 | Interpolant | Velocity $v$ | "How fast is the sample moving?" |
 | Consistency | Clean data $x_0$ | "What's the original data?" |
 | OT Flow | Velocity $v$ | "How fast is the sample moving?" (OT-paired) |
+| DiT | Noise $\epsilon$ | "What noise was added?" (transformer) |
 
 ### 2. Training Objective
 
@@ -444,6 +552,7 @@ class LightOTFlow(LightningModule):
 | **Interpolant** | $\|v - \hat{v}\|^2$ | Uniform (no weighting) |
 | **Consistency** | $\|f_\theta(x_n) - f_{\theta^-}(x_{n-1})\|^2$ | Self-consistency |
 | **OT Flow** | $\|v - \hat{v}\|^2$ (OT-paired) | Uniform (OT improves pairing) |
+| **DiT** | $\frac{d\gamma}{dt} \|\epsilon - \hat{\epsilon}\|^2$ | VDM-style weighting |
 
 ### 3. Sampling Process
 
@@ -454,6 +563,7 @@ class LightOTFlow(LightningModule):
 | **Interpolant** | ODE integration | 50-100 | No (deterministic) |
 | **Consistency** | Direct mapping | 1-10 | No (deterministic) |
 | **OT Flow** | ODE integration | 50-100 | No (deterministic) |
+| **DiT** | Reverse diffusion | 250-1000 | Yes (ancestral) |
 
 ### 4. Noise Schedule
 
@@ -465,6 +575,18 @@ class LightOTFlow(LightningModule):
 | **Interpolant** | N/A | N/A |
 | **Consistency** | $\sigma(t)$ power-law | ❌ Fixed (but well-studied) |
 | **OT Flow** | N/A | N/A |
+| **DiT** | $\gamma(t)$ function | ✅ Yes (VDM-style) |
+
+### 5. Network Architecture
+
+| Model | Backbone | Global Context |
+|-------|----------|----------------|
+| **VDM/DDPM** | UNet | Limited (via skip connections) |
+| **Score** | NCSNpp UNet | Limited |
+| **Interpolant** | UNet | Limited |
+| **Consistency** | UNet | Limited |
+| **OT Flow** | UNet | Limited |
+| **DiT** | Transformer | Full (self-attention over all patches) |
 
 ---
 
