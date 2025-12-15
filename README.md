@@ -2,14 +2,20 @@
 
 A unified framework for training variational diffusion models on cosmological simulations and using them for baryonic field inference (BIND).
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
+[![License: BSD-2](https://img.shields.io/badge/License-BSD%202--Clause-orange.svg)](https://opensource.org/licenses/BSD-2-Clause)
+
 ## Table of Contents
 
 1. [Installation](#1-installation)
-2. [Configuration Setup](#2-configuration-setup)
-3. [Training the Diffusion Model](#3-training-the-diffusion-model)
-4. [Loading a Trained Model](#4-loading-a-trained-model)
-5. [Running BIND Inference](#5-running-bind-inference)
-6. [Test Coverage](#6-test-coverage)
+2. [Quick Start](#2-quick-start)
+3. [Configuration Setup](#3-configuration-setup)
+4. [Training the Diffusion Model](#4-training-the-diffusion-model)
+5. [Loading a Trained Model](#5-loading-a-trained-model)
+6. [Running BIND Inference](#6-running-bind-inference)
+7. [Test Coverage](#7-test-coverage)
+8. [Contributing](#8-contributing)
 
 ---
 
@@ -19,43 +25,65 @@ A unified framework for training variational diffusion models on cosmological si
 
 - Python 3.10+
 - PyTorch 2.0+ with CUDA support
-- Access to CAMELS simulations (for training data generation)
+- Access to CAMELS simulations (for training data generation) or your own simulation data
 
 ### Setting Up the Environment
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/vdm_BIND.git
+git clone https://github.com/Maxelee/vdm_BIND.git
 cd vdm_BIND
 
-# Option 1: Use existing virtual environment (recommended for cluster)
-source /mnt/home/mlee1/venvs/torch3/bin/activate
+# Option 1: Create new conda environment (recommended)
+conda create -n vdm_bind python=3.10
+conda activate vdm_bind
+pip install -e .
 
-# Option 2: Create new environment
+# Option 2: Create new virtual environment
 python -m venv venv
 source venv/bin/activate
+pip install -e .
+
+# Option 3: Install dependencies only
 pip install -r requirements.txt
 ```
 
-### Required Dependencies
+### Installing Pylians3 (Required for Power Spectrum Analysis)
 
-```
-torch >= 2.0
-lightning >= 2.0
-numpy
-h5py
-pandas
-scipy
-matplotlib
-joblib
+Pylians3 provides `MAS_library` and `Pk_library` for mesh assignment and power spectrum computation:
+
+```bash
+# Install via pip (recommended)
+pip install Pylians
+
+# Or install from source for latest features
+git clone https://github.com/franciscovillaescusa/Pylians3.git
+cd Pylians3
+python setup.py install
 ```
 
-### Optional Dependencies (for full functionality)
+**Note:** Pylians3 requires a C compiler. On Ubuntu/Debian: `sudo apt install build-essential`
 
+### Docker Container (Coming Soon)
+
+For reproducible environments:
+
+```bash
+# Pull the container
+docker pull maxelee/vdm_bind:latest
+
+# Run with GPU support
+docker run --gpus all -it maxelee/vdm_bind:latest
 ```
-MAS_library (pylians3)    # For mesh assignment
-Pk_library (pylians3)     # For power spectrum analysis
-pytest                    # For running tests
+
+### Singularity (for HPC clusters)
+
+```bash
+# Pull the Singularity image
+singularity pull vdm_bind.sif docker://maxelee/vdm_bind:latest
+
+# Run
+singularity exec --nv vdm_bind.sif python train_unified.py --help
 ```
 
 ### Verify Installation
@@ -66,11 +94,46 @@ python run_tests.py --validate
 
 # Run full test suite
 python -m pytest tests/ -v
+
+# Quick sanity check
+python -c "from vdm import networks_clean; print('✓ VDM-BIND installed successfully')"
 ```
 
 ---
 
-## 2. Configuration Setup
+## 2. Quick Start
+
+### Apply BIND to Your Simulation (Inference)
+
+```bash
+# Generate baryonic fields from a DMO simulation
+python bind_predict.py \
+    --dmo_path /path/to/your/snap_090.hdf5 \
+    --halo_catalog /path/to/your/halos.hdf5 \
+    --output_dir ./my_bind_output
+
+# With custom mass threshold and multiple realizations
+python bind_predict.py \
+    --dmo_path /path/to/snap.hdf5 \
+    --halo_catalog /path/to/halos.hdf5 \
+    --output_dir ./output \
+    --mass_threshold 5e12 \
+    --n_realizations 5
+```
+
+### Train a New Model
+
+```bash
+# Train VDM on your data
+python train_unified.py --model vdm --config configs/clean_vdm_aggressive_stellar.ini
+
+# Train with different model types
+python train_unified.py --model interpolant --config configs/interpolant.ini
+```
+
+---
+
+## 3. Configuration Setup
 
 ### Environment Variables
 

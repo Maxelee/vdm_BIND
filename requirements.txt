@@ -1,20 +1,44 @@
-# Core dependencies
+# VDM-BIND Requirements
+# =====================
+# Install with: pip install -r requirements.txt
+
+# Core ML dependencies
 torch>=2.0
 lightning>=2.0
-numpy
-h5py
-pandas
-scipy
-matplotlib
-tqdm
-scikit-image
-joblib
+numpy>=1.21
+scipy>=1.9
 
-# Optional: Power spectrum analysis (pylians3)
-# MAS_library
-# Pk_library
+# Data handling
+h5py>=3.7
+pandas>=1.5
+joblib>=1.2
 
-# Optional: Development tools
-pytest
-jupyter
-tensorboard
+# Visualization
+matplotlib>=3.5
+tqdm>=4.64
+
+# Image processing
+scikit-image>=0.19
+
+# Configuration
+configparser>=5.0
+
+# ===================
+# Optional Dependencies
+# ===================
+
+# Power spectrum analysis (install separately)
+# pip install Pylians
+# Provides: MAS_library, Pk_library
+
+# Development tools
+# pip install pytest pytest-cov black flake8
+
+# Jupyter notebooks
+# pip install jupyter ipykernel
+
+# TensorBoard logging
+# pip install tensorboard
+
+# Optimal Transport (for OT Flow model)
+# pip install POT
