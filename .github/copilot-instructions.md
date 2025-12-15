@@ -25,6 +25,7 @@ train_unified.py → vdm/*_model.py → vdm/networks_clean.py
 - `interpolant` → Flow Matching / Stochastic Interpolants
 - `ot_flow` → Optimal Transport Flow Matching
 - `consistency` → Consistency Models
+- `dit` → Diffusion Transformer (DiT-S/B/L/XL variants)
 
 **Purpose**: Train generative models to learn DMO → Hydro mapping
 **Input**: Halo-centric cutouts (128×128) with conditional parameters
@@ -56,6 +57,8 @@ vdm_BIND/
 │   ├── interpolant_model.py  # Flow matching / stochastic interpolants
 │   ├── ot_flow_model.py      # Optimal transport flow matching
 │   ├── consistency_model.py  # Consistency models
+│   ├── dit.py                # Diffusion Transformer architecture
+│   ├── dit_model.py          # DiT PyTorch Lightning wrapper
 │   ├── astro_dataset.py      # Data loading
 │   ├── io_utils.py           # I/O utilities (load_simulation, project_particles_2d)
 │   └── validation_plots.py   # Validation plotting utilities
@@ -191,6 +194,8 @@ from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 | `vdm/dsm_model.py` | Denoising Score Matching |
 | `vdm/ot_flow_model.py` | Optimal Transport Flow Matching |
 | `vdm/consistency_model.py` | Consistency Models |
+| `vdm/dit.py` | Diffusion Transformer architecture (adaLN-Zero, patch embedding) |
+| `vdm/dit_model.py` | DiT PyTorch Lightning wrapper (LightDiTVDM) |
 | `vdm/io_utils.py` | Consolidated I/O: `load_simulation()`, `project_particles_2d()`, `load_halo_catalog()` |
 | `bind/bind.py` | BIND class: voxelize, extract, generate, paste |
 | `bind/workflow_utils.py` | ConfigLoader, ModelManager, sample() function |
@@ -295,7 +300,7 @@ source /mnt/home/mlee1/venvs/torch3/bin/activate
 # Train a specific model (interactive)
 python train_unified.py --model MODEL_TYPE --config configs/CONFIG.ini
 
-# MODEL_TYPE options: vdm, triple, ddpm, dsm, interpolant, ot_flow, consistency
+# MODEL_TYPE options: vdm, triple, ddpm, dsm, interpolant, ot_flow, consistency, dit
 ```
 
 ### Config Files
@@ -309,10 +314,11 @@ python train_unified.py --model MODEL_TYPE --config configs/CONFIG.ini
 | Stochastic Interpolant | `configs/stochastic_interpolant.ini` |
 | OT Flow | `configs/ot_flow.ini` |
 | Consistency | `configs/consistency.ini` |
+| DiT (Transformer) | `configs/dit.ini` |
 
 ### SLURM Training
 ```bash
-# Submit all 8 models as array job
+# Submit all 9 models as array job
 sbatch scripts/run_train_unified.sh
 
 # Monitor running jobs
