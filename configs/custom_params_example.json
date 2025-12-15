@@ -1,0 +1,26 @@
+{
+    "description": "Example custom parameter specification for VDM training",
+    "notes": [
+        "param_min/param_max define normalization bounds",
+        "Parameters will be normalized to [0,1] before embedding",
+        "Your training data .npz files must include 'params' array with same number of values"
+    ],
+    "param_names": [
+        "Omega_m",
+        "sigma_8",
+        "AGN_feedback_efficiency",
+        "SN_feedback_efficiency",
+        "star_formation_threshold",
+        "black_hole_seed_mass"
+    ],
+    "param_min": [0.1, 0.5, 0.0, 0.0, 0.1, 10000.0],
+    "param_max": [0.5, 1.2, 1.0, 1.0, 10.0, 1000000.0],
+    "param_units": [
+        "dimensionless",
+        "dimensionless", 
+        "dimensionless",
+        "dimensionless",
+        "cm^-3",
+        "M_sun"
+    ]
+}
