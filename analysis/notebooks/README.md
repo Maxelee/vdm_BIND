@@ -9,14 +9,20 @@ These notebooks are refactored from the original `Paper_plots.ipynb` to provide 
 ## Directory Structure
 
 ```
-paper_notebooks/
-├── README.md                        # This file
-├── paper_utils.py                   # Shared utility functions
-├── 01_bind_overview.ipynb           # Data visualization and BIND process overview
-├── 02_power_spectrum_analysis.ipynb # Power spectrum ratio S(k) analysis
-├── 03_density_profile_analysis.ipynb# Radial density profile residuals
-├── 04_integrated_mass_analysis.ipynb# Integrated mass within R_vir multiples
-└── 05_ssim_analysis.ipynb           # Structural similarity (SSIM) metrics
+analysis/notebooks/
+├── README.md                            # This file
+├── 01_bind_overview.ipynb               # Data visualization and BIND process overview
+├── 02_power_spectrum_analysis.ipynb     # Power spectrum ratio S(k) analysis
+├── 03_density_profile_analysis.ipynb    # Radial density profile residuals
+├── 04_integrated_mass_analysis.ipynb    # Integrated mass within R_vir multiples
+├── 05_ssim_analysis.ipynb               # Structural similarity (SSIM) metrics
+├── 06_pqm_distribution_analysis.ipynb   # PQM distribution comparison
+├── 07_peak_count_analysis.ipynb         # Peak count statistics
+├── 08_nongaussian_statistics.ipynb      # Non-Gaussian statistics analysis
+├── model_comparison_simple.ipynb        # Quick model comparison
+├── bijective_halo_center_analysis.ipynb # Halo centering analysis
+├── bind_power_spectrum.ipynb            # Extended power spectrum analysis
+└── interpretability_analysis.ipynb      # Model interpretability
 ```
 
 ## Notebook Descriptions
@@ -133,16 +139,20 @@ If you use these analyses, please cite the BIND paper:
 
 ## Model Types
 
-These notebooks support multiple model types for the DMO → Hydro mapping:
+These notebooks support multiple generative model types for the DMO → Hydro mapping:
 
 | Model Type | Description | Config Example |
 |------------|-------------|----------------|
-| VDM (clean) | Variational Diffusion Model (3-channel) | `clean_vdm_aggressive_stellar.ini` |
-| VDM (triple) | Three independent 1-channel VDMs | `clean_vdm_triple.ini` |
-| DDPM | Score-based diffusion (NCSNpp) | `ddpm.ini` |
-| **Interpolant** | Flow matching / stochastic interpolants | `interpolant.ini` |
+| VDM | Variational Diffusion Model (3-channel) | `clean_vdm_aggressive_stellar.ini` |
+| Triple VDM | Three independent 1-channel VDMs | `clean_vdm_triple.ini` |
+| DDPM | Denoising Diffusion (NCSNpp/VP-SDE) | `ddpm.ini` |
+| DSM | Denoising Score Matching | `dsm.ini` |
+| Interpolant | Flow matching (deterministic) | `interpolant.ini` |
+| Stochastic Interpolant | Flow matching with noise | `stochastic_interpolant.ini` |
+| OT Flow | Optimal Transport Flow Matching | `ot_flow.ini` |
+| Consistency | Consistency Models (few-step sampling) | `consistency.ini` |
 
-The interpolant models learn a velocity field to transport from x_0 to x_1, using flow matching loss instead of diffusion objectives. They typically require fewer sampling steps (20-50 vs 250-1000) and have simpler loss functions.
+The interpolant/flow matching models learn a velocity field to transport from x_0 to x_1, using MSE loss instead of diffusion objectives. They typically require fewer sampling steps (20-50 vs 250-1000).
 
 ## Notes
 

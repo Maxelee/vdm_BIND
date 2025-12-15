@@ -1,0 +1,20 @@
+# Core dependencies
+torch>=2.0
+lightning>=2.0
+numpy
+h5py
+pandas
+scipy
+matplotlib
+tqdm
+scikit-image
+joblib
+
+# Optional: Power spectrum analysis (pylians3)
+# MAS_library
+# Pk_library
+
+# Optional: Development tools
+pytest
+jupyter
+tensorboard

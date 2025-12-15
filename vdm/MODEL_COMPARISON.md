@@ -1,6 +1,6 @@
 # Generative Model Comparison for VDM-BIND
 
-This document provides a comprehensive comparison of the six generative modeling approaches implemented in VDM-BIND for learning the DMO → Hydro mapping. We explain the mathematical foundations, practical tradeoffs, and our recommendations for the best approach.
+This document provides a comprehensive comparison of the eight generative modeling approaches implemented in VDM-BIND for learning the DMO → Hydro mapping. We explain the mathematical foundations, practical tradeoffs, and our recommendations for the best approach.
 
 **Authors**: VDM-BIND Development Team  
 **Last Updated**: 2025
@@ -21,14 +21,16 @@ This document provides a comprehensive comparison of the six generative modeling
 
 ## Overview
 
-The VDM-BIND project aims to learn a mapping from Dark Matter Only (DMO) N-body simulations to full Hydrodynamical simulations, predicting three baryonic fields: [Dark Matter (hydro), Gas, Stars]. We explore six generative modeling approaches:
+The VDM-BIND project aims to learn a mapping from Dark Matter Only (DMO) N-body simulations to full Hydrodynamical simulations, predicting three baryonic fields: [Dark Matter (hydro), Gas, Stars]. We explore eight generative modeling approaches:
 
 | Model | File | Approach | Key Innovation |
 |-------|------|----------|----------------|
 | **VDM (Clean)** | `vdm_model_clean.py` | Joint 3-channel VDM | Learned noise schedule, variance-preserving diffusion |
 | **VDM (Triple)** | `vdm_model_triple.py` | 3 independent VDMs | Per-channel specialization |
-| **DDPM** | `ddpm_model.py` | Score-based diffusion | Denoising Score Matching, flexible architectures |
+| **DDPM** | `ddpm_model.py` | Score-based diffusion | Denoising Score Matching, VP-SDE |
+| **DSM** | `dsm_model.py` | Denoising Score Matching | Custom UNet, explicit score function |
 | **Interpolant** | `interpolant_model.py` | Flow matching | Deterministic ODE, simple velocity MSE loss |
+| **Stochastic Interpolant** | `interpolant_model.py` | Flow matching + noise | Adds noise during interpolation for diversity |
 | **Consistency** | `consistency_model.py` | Consistency models | Single-step or few-step sampling |
 | **OT Flow** | `ot_flow_model.py` | OT flow matching | Optimal transport coupling for straighter paths |
 
