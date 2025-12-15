@@ -243,10 +243,11 @@ class ConfigLoader:
         Find the best checkpoint, supporting multiple checkpoint formats:
         
         1. New format (epoch_checkpoint): epoch-epoch=XXX-step=YYY.ckpt (files)
-        2. Old format (val_checkpoint): epoch=X-step=Y-val/ dirs with elbo=-X.XXX.ckpt inside
-        3. Latest checkpoints: latest-epoch=X-step=Y.ckpt (files)
+        2. Val checkpoint files: epoch=X-step=Y-val_elbo=Z.ckpt or epoch=X-step=Y-val_loss=Z.ckpt
+        3. Old format (val_checkpoint dirs): epoch=X-step=Y-val/ dirs with elbo=-X.XXX.ckpt inside
+        4. Latest checkpoints: latest-epoch=X-step=Y.ckpt (files)
         
-        Priority: epoch-epoch* files > val checkpoint dirs > latest files
+        Priority: epoch-epoch* > val checkpoint files > val checkpoint dirs > latest files
         """
         self.tb_log_path = f"{self.tb_logs}/{self.model_name}/version_{self.version}/"
         
@@ -255,7 +256,13 @@ class ConfigLoader:
         if not ckpts:
             ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch-epoch*.ckpt', recursive=True)
         
-        # Pattern 2: Old val checkpoint directories (epoch=X-step=Y-val/)
+        # Pattern 2: Val checkpoint files (epoch=X-step=Y-val_elbo=Z.ckpt or val_loss=Z.ckpt)
+        if not ckpts:
+            ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch=*-val_*.ckpt')
+            if not ckpts:
+                ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch=*-val_*.ckpt', recursive=True)
+        
+        # Pattern 3: Old val checkpoint directories (epoch=X-step=Y-val/)
         # These contain files like elbo=-5.514.ckpt or val_loss=0.123.ckpt
         if not ckpts:
             val_dirs = glob.glob(f'{self.tb_log_path}/checkpoints/epoch=*-val')
@@ -274,7 +281,7 @@ class ConfigLoader:
                     inner_ckpts.sort(key=self._natural_sort_key)
                     ckpts = [inner_ckpts[0]]  # Take the best one
         
-        # Pattern 3: Latest checkpoint files as fallback
+        # Pattern 4: Latest checkpoint files as fallback
         if not ckpts:
             ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/latest-*.ckpt')
             if not ckpts:
@@ -1975,9 +1982,9 @@ class DataHandler:
         return tuple(result)
 
 # Enhanced sampling function with ASN1 support        
-def sample(vdm, conditions, batch_size=1, conditional_params=None,):
+def sample(vdm, conditions, batch_size=1, conditional_params=None, n_sampling_steps=None):
     """
-    Process multiple conditions and return stacked samples with optional Omega_m, halo_mass, and ASN1 conditioning.
+    Process multiple conditions and return stacked samples with optional conditioning.
     
     Args:
         vdm: Your VDM model
@@ -1987,6 +1994,8 @@ def sample(vdm, conditions, batch_size=1, conditional_params=None,):
                    - C>1: base DM + (C-1) large-scale maps
         batch_size: Number of samples per condition
         conditional_params: Optional array of conditional parameters
+        n_sampling_steps: Number of diffusion steps for sampling. If None, uses 
+                         model's default (from hparams or 1000 as fallback).
     
     Returns:
         torch.Tensor of shape (N, batch_size, 3, H, W) or (N, batch_size, 3, H, W, D)
@@ -1996,10 +2005,14 @@ def sample(vdm, conditions, batch_size=1, conditional_params=None,):
     vdm = vdm.to('cuda')
     samples = []
     
+    # Determine number of sampling steps
+    if n_sampling_steps is None:
+        n_sampling_steps = getattr(vdm.hparams, 'n_sampling_steps', 1000)
+    
     # Determine dimensionality
     is_3d = len(conditions.shape) == 5  # (N, C, H, W, D)
     
-    for i, cond in enumerate(tqdm(conditions, desc='Generating Samples')):
+    for i, cond in enumerate(tqdm(conditions, desc=f'Generating Samples ({n_sampling_steps} steps)')):
         # cond is now (C, H, W) or (C, H, W, D) where C = 1 + num_large_scales
         # Expand to batch_size: (batch_size, C, H, W) or (batch_size, C, H, W, D)
         if is_3d:
@@ -2015,7 +2028,7 @@ def sample(vdm, conditions, batch_size=1, conditional_params=None,):
         hydro_sample = vdm.draw_samples(
             conditioning=cond_expanded,
             batch_size=batch_size,
-            n_sampling_steps=getattr(vdm.hparams, 'n_sampling_steps', 1000),
+            n_sampling_steps=n_sampling_steps,
             param_conditioning=param_expanded,
         )  
         

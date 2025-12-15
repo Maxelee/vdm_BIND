@@ -80,6 +80,68 @@ class AstroDataset(TensorDataset):
         result = [m_dm, large_scale, m_target, conditions]
         return tuple(result)
 
+
+def _get_cached_file_list(data_root, cache_file=None):
+    """
+    Get list of training files with caching for fast startup.
+    
+    On first run, scans the data directory and saves the file list to a cache.
+    On subsequent runs, loads from cache (100x faster on network filesystems).
+    
+    Args:
+        data_root: Root directory containing training data
+        cache_file: Path to cache file. If None, uses data_root/file_list_cache.txt
+    
+    Returns:
+        List of file paths
+    """
+    import time
+    
+    if cache_file is None:
+        cache_file = os.path.join(data_root, "file_list_cache.txt")
+    
+    # Check if cache exists and is recent (within 7 days)
+    cache_valid = False
+    if os.path.exists(cache_file):
+        cache_age = time.time() - os.path.getmtime(cache_file)
+        cache_valid = cache_age < 7 * 24 * 3600  # 7 days
+    
+    if cache_valid:
+        print(f"📂 Loading file list from cache: {cache_file}")
+        start = time.time()
+        with open(cache_file, 'r') as f:
+            all_files = [line.strip() for line in f if line.strip()]
+        print(f"   Loaded {len(all_files)} files in {time.time() - start:.2f}s")
+        return all_files
+    
+    # Scan directory and create cache
+    print(f"📂 Scanning data directory (this may take a few minutes on first run)...")
+    print(f"   Path: {data_root}")
+    start = time.time()
+    
+    # Use os.walk which is faster than glob on network filesystems
+    all_files = []
+    for root, dirs, files in os.walk(data_root):
+        for f in files:
+            if 'halo' in f and f.endswith('.npz'):
+                all_files.append(os.path.join(root, f))
+    
+    all_files = sorted(all_files)
+    scan_time = time.time() - start
+    print(f"   Found {len(all_files)} files in {scan_time:.2f}s")
+    
+    # Save cache
+    try:
+        with open(cache_file, 'w') as f:
+            for path in all_files:
+                f.write(path + '\n')
+        print(f"   Saved cache to: {cache_file}")
+    except Exception as e:
+        print(f"   Warning: Could not save cache: {e}")
+    
+    return all_files
+
+
 class AstroDataModule(LightningDataModule):
     def __init__(
             self, 
@@ -106,9 +168,8 @@ class AstroDataModule(LightningDataModule):
     def setup(self, stage=None):
 
         if stage == "fit" or stage is None:
-            # Find all NPZ files recursively
-            pattern = os.path.join(self.data_root, "**", "*halo*.npz")
-            self.all_files = sorted(glob.glob(pattern, recursive=True))
+            # Use cached file list for fast startup (100x faster on network filesystems)
+            self.all_files = _get_cached_file_list(self.data_root)
             print(f"Found {len(self.all_files)} total files")
             
             # Optionally limit dataset size for fast ablation studies with RANDOM sampling
@@ -143,9 +204,8 @@ class AstroDataModule(LightningDataModule):
                 self.valid_data = torch.utils.data.Subset(self.valid_data, val_indices)
 
         if stage == "test" or stage is None:
-            # Find all NPZ files recursively
-            pattern = os.path.join(self.data_root, "**", "*halo*.npz")
-            self.all_files = sorted(glob.glob(pattern, recursive=True))
+            # Use cached file list for fast startup
+            self.all_files = _get_cached_file_list(self.data_root)
 
             self.test_data = AstroDataset(
                 self.all_files, 

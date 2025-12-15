@@ -201,27 +201,31 @@ def train(
     # TensorBoard logger
     logger = TensorBoardLogger(tb_logs, name=model_name, version=version)
 
-    # Checkpoint every time validation metric improves
+    # Checkpoint every time validation metric improves (keep only best 3)
     val_checkpoint = ModelCheckpoint(
         filename="{epoch}-{step}-{" + early_stopping_monitor.replace('/', '_') + ":.4f}",
         monitor=early_stopping_monitor,
         mode="min",
+        save_top_k=3,
+        save_weights_only=True,  # Much faster - skip optimizer state
     )
 
-    # Checkpoint at every 6000 steps
+    # Checkpoint at every 6000 steps (keep only latest 3)
     latest_checkpoint = ModelCheckpoint(
         filename="latest-{epoch}-{step}",
         monitor="step",
         mode="max",
         every_n_train_steps=6000,
-        save_top_k=10
+        save_top_k=3,
+        save_weights_only=True,
     )
     
-    # Checkpoint at every epoch
+    # Checkpoint every 5 epochs (not every epoch - too slow on Ceph)
     epoch_checkpoint = ModelCheckpoint(
         filename="epoch-{epoch:03d}-{step}",
-        save_top_k=-1,  # Save all checkpoints
-        every_n_epochs=1,
+        save_top_k=-1,  # Keep all epoch checkpoints (no monitor needed)
+        every_n_epochs=5,
+        save_weights_only=True,
     )
     
     # Build callbacks list
@@ -298,6 +302,7 @@ def train(
         accelerator = "auto"
         num_devices = torch.cuda.device_count() if torch.cuda.is_available() else 1
         if num_devices > 1:
+            # Use ddp strategy - requires srun with ntasks=num_gpus
             if find_unused_parameters:
                 strategy = "ddp_find_unused_parameters_true"
             else:
@@ -942,8 +947,10 @@ Examples:
     compile_model = cfg.get_bool('compile_model', False)
     
     # Gradient clipping (model-specific defaults)
-    if args.model == 'ddpm':
-        gradient_clip_val = None  # DSM loss has naturally well-behaved gradients
+    # Note: triple model uses manual optimization, which doesn't support automatic gradient clipping
+    # Note: ddpm uses score_models which has very large loss values (sum not mean), needs clipping
+    if args.model == 'triple':
+        gradient_clip_val = None  # Manual optimization doesn't support automatic gradient clipping
     else:
         gradient_clip_val = cfg.get_float('gradient_clip_val', 1.0)
     

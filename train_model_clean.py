@@ -92,27 +92,31 @@ def train(
     # TensorBoard logger - use explicit version to avoid nested directories
     comet_logger = TensorBoardLogger(tb_logs, name=model_name, version=version)
 
-    # Checkpoint every time val/elbo improves
+    # Checkpoint every time val/elbo improves (keep only best 3)
     val_checkpoint = ModelCheckpoint(
-        filename="{epoch}-{step}-{val/elbo:.3f}",
+        filename="{epoch}-{step}-val_elbo={val/elbo:.3f}",
         monitor="val/elbo",
         mode="min",
+        save_top_k=3,
+        save_weights_only=True,  # Much faster - skip optimizer state
     )
 
-    # Checkpoint at every 6000 steps
+    # Checkpoint at every 6000 steps (keep only latest 3)
     latest_checkpoint = ModelCheckpoint(
         filename="latest-{epoch}-{step}",
         monitor="step",
         mode="max",
         every_n_train_steps=6000,
-        save_top_k=10
+        save_top_k=3,
+        save_weights_only=True,
     )
     
-    # Checkpoint at every epoch (consistent format with DDPM/interpolant)
+    # Checkpoint every 5 epochs (not every epoch - too slow on Ceph)
     epoch_checkpoint = ModelCheckpoint(
         filename="epoch-{epoch:03d}-{step}",
-        save_top_k=-1,  # Save all checkpoints
-        every_n_epochs=1,
+        save_top_k=-1,  # Keep all epoch checkpoints (no monitor needed)
+        every_n_epochs=5,
+        save_weights_only=True,
     )
     
     # Build callbacks list (validation plots removed for faster training)
