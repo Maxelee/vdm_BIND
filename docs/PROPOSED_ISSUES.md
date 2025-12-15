@@ -127,16 +127,19 @@ FNO could be well-suited for cosmological data as it learns in frequency domain:
 
 ---
 
-### Issue #6: Add model ensemble support
+### ~~Issue #6: Add model ensemble support~~ ✅
 **Labels:** `enhancement`
-**Branch:** `feature/ensemble`
-**Status:** NOT STARTED
+**Branch:** `feature/uncertainty-benchmark-ensemble`
+**Status:** COMPLETED (merged to main)
 
 **Description:**
 Allow combining predictions from multiple models:
-- Ensemble of different model types (VDM + Interpolant)
-- Ensemble of same model with different seeds
-- Weighted averaging or learned combination
+- ✅ ModelEnsemble: Simple averaging of multiple models
+- ✅ WeightedEnsemble: Learnable or fixed per-model weights
+- ✅ ChannelWiseEnsemble: Per-channel weighting for specialized models
+- ✅ DiversityEnsemble: Promotes diverse predictions
+- ✅ create_ensemble_from_checkpoints(): Load from checkpoint files
+- ✅ create_multi_seed_ensemble(): Combine models from different seeds
 
 ---
 
@@ -200,63 +203,66 @@ Export trained models for fast inference:
 
 ## 📊 REMAINING: Analysis & Evaluation
 
-### Issue #16: Standardized benchmark suite
+### ~~Issue #16: Standardized benchmark suite~~ ✅
 **Labels:** `enhancement`, `analysis`
-**Branch:** `feature/benchmark-suite`
-**Status:** NOT STARTED
+**Branch:** `feature/uncertainty-benchmark-ensemble`
+**Status:** COMPLETED (merged to main)
 
 **Description:**
 Create standardized evaluation:
-- Power spectrum ratio at fixed k values
-- SSIM distribution statistics
-- Integrated mass scatter
-- Inference time benchmarks
-- Compare all 8 models consistently
+- ✅ BenchmarkSuite class for consistent model comparison
+- ✅ Pixel metrics: MSE, RMSE, MAE, correlation, SSIM
+- ✅ Power spectrum metrics: ratio, correlation at fixed k
+- ✅ Mass metrics: bias, scatter
+- ✅ Timing: inference time, throughput
+- ✅ Results export to JSON
+- ✅ quick_benchmark() for rapid iteration
 
 ---
 
-### Issue #17: Add uncertainty quantification
+### ~~Issue #17: Add uncertainty quantification~~ ✅
 **Labels:** `enhancement`, `science`
-**Branch:** `feature/uncertainty`
-**Status:** NOT STARTED
+**Branch:** `feature/uncertainty-benchmark-ensemble`
+**Status:** COMPLETED (merged to main)
 
 **Description:**
 Quantify prediction uncertainty:
-- Multi-realization variance
-- Per-pixel uncertainty maps
-- Ensemble disagreement
-- Calibration analysis
+- ✅ UncertaintyEstimator: Multi-realization sampling
+- ✅ MC Dropout support for approximate Bayesian inference
+- ✅ EnsembleUncertainty: Uncertainty from model ensembles
+- ✅ Calibration analysis: coverage, ECE, reliability diagrams
+- ✅ Uncertainty maps: std, variance, IQR, entropy methods
 
 ---
 
 ## 📋 Summary Table
 
-### ✅ Completed Issues (8/17)
+### ✅ Completed Issues (11/17)
 
 | Issue | Description | Status |
 |-------|-------------|--------|
 | #1 | Installation docs & requirements.txt | ✅ DONE |
 | #2 | Sync documentation files | ✅ DONE |
 | #4 | DiT (Diffusion Transformer) backbone | ✅ DONE |
+| #6 | Model ensemble support | ✅ DONE |
 | #7 | Abstract data interface | ✅ DONE |
 | #8 | Flexible parameter conditioning | ✅ DONE |
 | #9 | Auto-normalization script | ✅ DONE |
 | #14 | CI/CD pipeline | ✅ DONE |
 | #15 | Synthetic data tests | ✅ DONE |
+| #16 | Standardized benchmark suite | ✅ DONE |
+| #17 | Uncertainty quantification | ✅ DONE |
 
-### 🔄 Remaining Issues (9/17)
+### 🔄 Remaining Issues (6/17)
 
 | Issue | Priority | Effort | Impact | Category |
 |-------|----------|--------|--------|----------|
 | #3 API documentation | 🟡 Medium | Medium | High | Docs |
 | #5 FNO backbone | 🟢 Low | Large | Medium | Architecture |
-| #6 Model ensemble | 🟡 Medium | Medium | Medium | Architecture |
 | #10 Data converters | 🟡 Medium | Medium | High | Generalization |
 | #11 3D optimization | 🔴 High | Large | High | Performance |
 | #12 Distributed inference | 🟢 Low | Large | Medium | Performance |
 | #13 Model export (ONNX) | 🟢 Low | Medium | Medium | Deployment |
-| #16 Benchmark suite | 🟡 Medium | Medium | High | Analysis |
-| #17 Uncertainty quantification | 🔴 High | Medium | High | Science |
 
 ---
 
@@ -264,10 +270,10 @@ Quantify prediction uncertainty:
 
 Based on impact and effort, here are the recommended next issues to tackle:
 
-1. **Issue #17: Uncertainty Quantification** - High scientific value, medium effort
-2. **Issue #16: Benchmark Suite** - Important for paper/validation
-3. **Issue #3: API Documentation** - Improves usability significantly
-4. **Issue #10: Data Converters** - Enables broader adoption
+1. **Issue #11: 3D Optimization** - High impact for large simulations
+2. **Issue #3: API Documentation** - Improves usability significantly
+3. **Issue #10: Data Converters** - Enables broader adoption
+4. **Issue #5: FNO Backbone** - Physics-informed architecture
 
 ---
 
