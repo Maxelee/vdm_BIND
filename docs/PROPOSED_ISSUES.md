@@ -4,37 +4,79 @@ This document outlines proposed issues to improve VDM-BIND's usability, generali
 
 ---
 
-## 🏷️ Documentation & Usability
+## ✅ COMPLETED ISSUES
 
-### Issue #1: Create requirements.txt and improve installation docs
-**Labels:** `documentation`, `good first issue`
+### ~~Issue #1: Create requirements.txt and improve installation docs~~ ✅
+**Status:** COMPLETED (merged to main)
 **Branch:** `docs/installation-improvements`
-
-**Description:**
-- ✅ Add `requirements.txt` file (DONE)
-- Add installation instructions for pylians3 (MAS_library, Pk_library)
-- Add Docker/Singularity container option for reproducibility
-- Test installation on fresh environment
+- ✅ Added `requirements.txt` file
+- ✅ Added `CONTRIBUTING.md`
+- ✅ Enhanced installation documentation
 
 ---
 
-### Issue #2: Sync all documentation files
-**Labels:** `documentation`
+### ~~Issue #2: Sync all documentation files~~ ✅
+**Status:** COMPLETED (merged to main)
 **Branch:** `docs/sync-readmes`
-
-**Description:**
-README files have inconsistencies:
-- [x] Main README references 8 models, MODEL_COMPARISON.md said 6 (FIXED)
-- [x] Notebook README had outdated structure (FIXED)
-- [ ] Add parameter count clarification (15 vs 35 params)
-- [ ] Update citation placeholders when paper is published
-- [ ] Add CONTRIBUTING.md for collaborators
+- ✅ Fixed 8 models inconsistency in MODEL_COMPARISON.md
+- ✅ Updated notebook README structure
+- ✅ Added parameter count clarification (6 base + up to 29 derived = 35 total)
 
 ---
+
+### ~~Issue #7: Abstract simulation data interface~~ ✅
+**Status:** COMPLETED (merged to main)
+**Branch:** `feature/data-interface`
+- ✅ Created `vdm/data_interface.py` with abstract base classes
+- ✅ Implemented `SimulationLoader`, `HaloCatalogLoader` ABCs
+- ✅ Added support for SubFind, Rockstar, CSV halo catalogs
+- ✅ Created example implementations for CAMELS
+
+---
+
+### ~~Issue #8: Flexible parameter conditioning~~ ✅
+**Status:** COMPLETED (merged to main)
+**Branch:** `feature/flexible-params`
+- ✅ Support 0 parameters (unconditional generation)
+- ✅ Support arbitrary N parameters via config
+- ✅ Added CSV/JSON param normalization loading
+- ✅ Added example configs and documentation
+
+---
+
+### ~~Issue #9: On-the-fly normalization computation script~~ ✅
+**Status:** COMPLETED (merged to main)
+**Branch:** `feature/auto-normalization`
+- ✅ Created `scripts/compute_normalization.py`
+- ✅ Computes mean/std for each field type
+- ✅ Supports HDF5 and NPZ input formats
+
+---
+
+### ~~Issue #14: Add CI/CD pipeline~~ ✅
+**Status:** COMPLETED (merged to main)
+**Branch:** `ci/github-actions`
+- ✅ Added `.github/workflows/ci.yml` for PR testing
+- ✅ Added `.github/workflows/release.yml` for releases
+- ✅ Includes linting, testing, coverage reporting
+
+---
+
+### ~~Issue #15: Add integration tests with synthetic data~~ ✅
+**Status:** COMPLETED (merged to main)
+**Branch:** `test/synthetic-data`
+- ✅ Created `scripts/generate_synthetic_data.py`
+- ✅ Created `tests/test_synthetic.py` with pipeline tests
+- ✅ Tests UNet, VDM, Interpolant forward passes
+
+---
+
+## 🏷️ REMAINING: Documentation & Usability
 
 ### Issue #3: Add comprehensive API documentation
 **Labels:** `documentation`, `enhancement`
 **Branch:** `docs/api-reference`
+**Status:** NOT STARTED
 
 **Description:**
 - Add docstrings to all public functions
@@ -44,11 +86,12 @@ README files have inconsistencies:
 
 ---
 
-## 🔬 Architecture Improvements
+## 🔬 REMAINING: Architecture Improvements
 
 ### Issue #4: Add DiT (Diffusion Transformer) backbone option
 **Labels:** `enhancement`, `architecture`
 **Branch:** `feature/dit-backbone`
+**Status:** NOT STARTED
 
 **Description:**
 Add support for Diffusion Transformer architecture as an alternative to UNet:
@@ -65,6 +108,7 @@ Add support for Diffusion Transformer architecture as an alternative to UNet:
 ### Issue #5: Implement Fourier Neural Operator (FNO) option
 **Labels:** `enhancement`, `architecture`, `physics-informed`
 **Branch:** `feature/fno-backbone`
+**Status:** NOT STARTED
 
 **Description:**
 FNO could be well-suited for cosmological data as it learns in frequency domain:
@@ -77,6 +121,7 @@ FNO could be well-suited for cosmological data as it learns in frequency domain:
 ### Issue #6: Add model ensemble support
 **Labels:** `enhancement`
 **Branch:** `feature/ensemble`
+**Status:** NOT STARTED
 
 **Description:**
 Allow combining predictions from multiple models:
@@ -86,66 +131,12 @@ Allow combining predictions from multiple models:
 
 ---
 
-## 🌍 Generalization
-
-### Issue #7: Abstract simulation data interface
-**Labels:** `enhancement`, `generalization`
-**Branch:** `feature/data-interface`
-**Priority:** HIGH
-
-**Description:**
-Create abstract interfaces to support arbitrary simulations:
-```python
-class SimulationLoader(ABC):
-    def load_particles(self, ptype) -> Tuple[positions, masses]
-    def get_box_size(self) -> float
-    def get_cosmology(self) -> Optional[Dict]
-
-class HaloCatalogLoader(ABC):
-    def load_halos(self, mass_threshold) -> Tuple[pos, mass, radii]
-```
-
-Implement for:
-- [x] CAMELS (existing)
-- [ ] Illustris/TNG direct
-- [ ] SIMBA
-- [ ] User-provided format
-
----
-
-### Issue #8: Flexible parameter conditioning
-**Labels:** `enhancement`, `generalization`
-**Branch:** `feature/flexible-params`
-
-**Description:**
-Currently hardcoded to 35 CAMELS parameters. Make flexible:
-- Support 0 parameters (unconditional generation)
-- Support arbitrary number of user-defined parameters
-- Config-driven parameter specification
-- Document how to add custom parameters
-
----
-
-### Issue #9: On-the-fly normalization computation script
-**Labels:** `enhancement`, `usability`
-**Branch:** `feature/auto-normalization`
-
-**Description:**
-Create script to compute normalization stats from user data:
-```bash
-python scripts/compute_normalization.py \
-    --data_dir /path/to/training_data \
-    --output data/custom_norm_stats.npz
-```
-- Compute mean/std for each field
-- Optional quantile transformer fitting
-- Validate stats are reasonable
-
----
+## 🌍 REMAINING: Generalization
 
 ### Issue #10: Data format converter scripts
 **Labels:** `enhancement`, `usability`
 **Branch:** `feature/data-converters`
+**Status:** NOT STARTED
 
 **Description:**
 Scripts to convert various simulation formats to BIND format:
@@ -155,11 +146,12 @@ Scripts to convert various simulation formats to BIND format:
 
 ---
 
-## ⚡ Performance
+## ⚡ REMAINING: Performance
 
 ### Issue #11: Add 3D support with memory optimization
 **Labels:** `enhancement`, `performance`
 **Branch:** `feature/3d-optimized`
+**Status:** NOT STARTED
 
 **Description:**
 Current 3D support is memory-limited. Improvements:
@@ -173,6 +165,7 @@ Current 3D support is memory-limited. Improvements:
 ### Issue #12: Distributed inference for large volumes
 **Labels:** `enhancement`, `performance`
 **Branch:** `feature/distributed-inference`
+**Status:** NOT STARTED
 
 **Description:**
 For applying BIND to large cosmological volumes (>500 Mpc):
@@ -185,6 +178,7 @@ For applying BIND to large cosmological volumes (>500 Mpc):
 ### Issue #13: ONNX/TensorRT export for deployment
 **Labels:** `enhancement`, `deployment`
 **Branch:** `feature/model-export`
+**Status:** NOT STARTED
 
 **Description:**
 Export trained models for fast inference:
@@ -195,38 +189,12 @@ Export trained models for fast inference:
 
 ---
 
-## 🧪 Testing & CI
-
-### Issue #14: Add CI/CD pipeline
-**Labels:** `infrastructure`
-**Branch:** `ci/github-actions`
-
-**Description:**
-- Add GitHub Actions for automated testing
-- Run tests on PR
-- Coverage reporting
-- Linting (black, flake8)
-
----
-
-### Issue #15: Add integration tests with synthetic data
-**Labels:** `testing`
-**Branch:** `test/synthetic-data`
-
-**Description:**
-Create small synthetic dataset for full pipeline testing:
-- ~10 halos with known properties
-- Include ground truth
-- Fast to run (<1 min)
-- Test full BIND pipeline end-to-end
-
----
-
-## 📊 Analysis & Evaluation
+## 📊 REMAINING: Analysis & Evaluation
 
 ### Issue #16: Standardized benchmark suite
 **Labels:** `enhancement`, `analysis`
 **Branch:** `feature/benchmark-suite`
+**Status:** NOT STARTED
 
 **Description:**
 Create standardized evaluation:
@@ -241,6 +209,7 @@ Create standardized evaluation:
 ### Issue #17: Add uncertainty quantification
 **Labels:** `enhancement`, `science`
 **Branch:** `feature/uncertainty`
+**Status:** NOT STARTED
 
 **Description:**
 Quantify prediction uncertainty:
@@ -253,15 +222,43 @@ Quantify prediction uncertainty:
 
 ## 📋 Summary Table
 
-| Issue | Priority | Effort | Impact |
-|-------|----------|--------|--------|
-| #7 Abstract data interface | 🔴 High | Large | High |
-| #8 Flexible params | 🔴 High | Medium | High |
-| #9 Auto-normalization | 🟡 Medium | Small | High |
-| #4 DiT backbone | 🟡 Medium | Large | Medium |
-| #14 CI/CD | 🟡 Medium | Medium | Medium |
-| #2 Sync docs | 🟢 Low | Small | Medium |
-| #13 Model export | 🟢 Low | Medium | Medium |
+### ✅ Completed Issues (7/17)
+
+| Issue | Description | Status |
+|-------|-------------|--------|
+| #1 | Installation docs & requirements.txt | ✅ DONE |
+| #2 | Sync documentation files | ✅ DONE |
+| #7 | Abstract data interface | ✅ DONE |
+| #8 | Flexible parameter conditioning | ✅ DONE |
+| #9 | Auto-normalization script | ✅ DONE |
+| #14 | CI/CD pipeline | ✅ DONE |
+| #15 | Synthetic data tests | ✅ DONE |
+
+### 🔄 Remaining Issues (10/17)
+
+| Issue | Priority | Effort | Impact | Category |
+|-------|----------|--------|--------|----------|
+| #3 API documentation | 🟡 Medium | Medium | High | Docs |
+| #4 DiT backbone | 🟡 Medium | Large | Medium | Architecture |
+| #5 FNO backbone | 🟢 Low | Large | Medium | Architecture |
+| #6 Model ensemble | 🟡 Medium | Medium | Medium | Architecture |
+| #10 Data converters | 🟡 Medium | Medium | High | Generalization |
+| #11 3D optimization | 🔴 High | Large | High | Performance |
+| #12 Distributed inference | 🟢 Low | Large | Medium | Performance |
+| #13 Model export (ONNX) | 🟢 Low | Medium | Medium | Deployment |
+| #16 Benchmark suite | 🟡 Medium | Medium | High | Analysis |
+| #17 Uncertainty quantification | 🔴 High | Medium | High | Science |
+
+---
+
+## 🎯 Recommended Next Steps
+
+Based on impact and effort, here are the recommended next issues to tackle:
+
+1. **Issue #17: Uncertainty Quantification** - High scientific value, medium effort
+2. **Issue #16: Benchmark Suite** - Important for paper/validation
+3. **Issue #3: API Documentation** - Improves usability significantly
+4. **Issue #10: Data Converters** - Enables broader adoption
 
 ---
 
