@@ -73,15 +73,23 @@ logs/
 *.ckpt
 *.npy
 *.npz
-!*_normalization_stats.npz
+!data/*_normalization_stats.npz
 *.h5
 *.hdf5
+*.pkl
+!data/*.pkl
 
 # Large data files
-data/
 outputs/
 imgs*/
 paper_plots/
+
+# Generated figures (regenerate from notebooks)
+analysis/figures/training/*.png
+analysis/figures/bind/*.png
+
+# Debug/temporary notebooks
+analysis/notebooks/debug_*.ipynb
 
 # Slurm logs
 *.o[0-9]*
