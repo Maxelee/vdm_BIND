@@ -481,6 +481,7 @@ def quick_benchmark(
     target: torch.Tensor,
     params: Optional[torch.Tensor] = None,
     n_samples: int = 10,
+    n_sampling_steps: int = 100,
     device: str = 'cuda',
 ) -> Dict[str, float]:
     """
@@ -494,6 +495,7 @@ def quick_benchmark(
         target: Ground truth target
         params: Optional parameters
         n_samples: Number of samples for timing
+        n_sampling_steps: Number of diffusion sampling steps
         device: Device to run on
         
     Returns:
@@ -515,6 +517,7 @@ def quick_benchmark(
         with torch.no_grad():
             if hasattr(model, 'draw_samples'):
                 kwargs = {'param_conditioning': params} if params is not None else {}
+                kwargs['n_sampling_steps'] = n_sampling_steps
                 pred = model.draw_samples(conditioning, batch_size=1, **kwargs)
             else:
                 raise ValueError("Model needs draw_samples method")
