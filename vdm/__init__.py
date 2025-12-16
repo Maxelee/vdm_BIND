@@ -55,6 +55,10 @@ from .interpolant_model import LightInterpolant, Interpolant
 # Import DSM module (uses custom UNet, no external dependencies)
 from .dsm_model import LightDSM
 
+# Import FNO module (no external dependencies)
+from .fno import FNO2d, create_fno_model, FNOForVDM
+from .fno_model import LightFNOVDM, LightFNOFlow
+
 __all__ = [
     # Core models
     'UNetVDM',
@@ -64,6 +68,12 @@ __all__ = [
     'LightInterpolant',
     'Interpolant',
     'LightDSM',
+    # FNO models
+    'FNO2d',
+    'create_fno_model',
+    'FNOForVDM',
+    'LightFNOVDM',
+    'LightFNOFlow',
     # Verbosity control
     'set_verbosity',
     'get_verbosity',

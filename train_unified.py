@@ -12,6 +12,8 @@ It supports the following model types:
 - OT-Flow (Optimal Transport Flow Matching)
 - Consistency (Consistency Models)
 - DiT (Diffusion Transformer)
+- FNO (Fourier Neural Operator) - spectral backbone with VDM training
+- FNO Flow (Fourier Neural Operator with Flow Matching)
 
 Usage:
     python train_unified.py --model vdm --config configs/clean_vdm_aggressive_stellar.ini
@@ -22,6 +24,8 @@ Usage:
     python train_unified.py --model ot_flow --config configs/ot_flow.ini
     python train_unified.py --model consistency --config configs/consistency.ini
     python train_unified.py --model dit --config configs/dit.ini
+    python train_unified.py --model fno --config configs/fno.ini
+    python train_unified.py --model fno_flow --config configs/fno.ini
     
     # CPU testing mode (any model)
     python train_unified.py --model vdm --config configs/clean_vdm.ini --cpu_only
@@ -35,6 +39,8 @@ Model Type Reference:
     ot_flow     - OT flow matching (LightOTFlow)
     consistency - Consistency models (LightConsistency)
     dit         - DiT backbone (LightDiTVDM)
+    fno         - FNO with VDM training (LightFNOVDM)
+    fno_flow    - FNO with flow matching (LightFNOFlow)
 """
 
 import os
@@ -62,7 +68,7 @@ torch.set_float32_matmul_precision("medium")
 # Model Type Constants
 # =============================================================================
 
-MODEL_TYPES = ['vdm', 'triple', 'ddpm', 'dsm', 'interpolant', 'ot_flow', 'consistency', 'dit']
+MODEL_TYPES = ['vdm', 'triple', 'ddpm', 'dsm', 'interpolant', 'ot_flow', 'consistency', 'dit', 'fno', 'fno_flow']
 
 DEFAULT_CONFIGS = {
     'vdm': 'configs/clean_vdm_aggressive_stellar.ini',
@@ -73,6 +79,8 @@ DEFAULT_CONFIGS = {
     'ot_flow': 'configs/ot_flow.ini',
     'consistency': 'configs/consistency.ini',
     'dit': 'configs/dit.ini',
+    'fno': 'configs/fno.ini',
+    'fno_flow': 'configs/fno.ini',
 }
 
 
@@ -985,6 +993,109 @@ def create_dit_model(cfg, min_vals, max_vals, use_param_conditioning):
     return model, 'val/loss'
 
 
+def create_fno_model(cfg, min_vals, max_vals, use_param_conditioning):
+    """Create FNO (Fourier Neural Operator) model with VDM training."""
+    from vdm.fno_model import LightFNOVDM
+    from vdm.fno import create_fno_model as _create_fno
+    
+    conditioning_channels = cfg.get_int('conditioning_channels', 1)
+    large_scale_channels = cfg.get_int('large_scale_channels', 3)
+    img_size = cfg.get_int('img_size', 128)
+    n_params = cfg.get_int('n_params', 35) if use_param_conditioning else 0
+    
+    # Get FNO variant or manual params
+    fno_variant = cfg.get_str('fno_variant', 'FNO-B')
+    
+    # Check if using manual specification
+    hidden_channels = cfg.get_optional('hidden_channels', None)
+    if hidden_channels is not None:
+        # Manual specification
+        print(f"\nCreating custom FNO model...")
+        from vdm.fno import FNO2d
+        fno = FNO2d(
+            in_channels=3,
+            out_channels=3,
+            conditioning_channels=conditioning_channels,
+            large_scale_channels=large_scale_channels,
+            hidden_channels=cfg.get_int('hidden_channels', 64),
+            n_layers=cfg.get_int('n_layers', 6),
+            modes1=cfg.get_int('modes', 16),
+            modes2=cfg.get_int('modes', 16),
+            n_params=n_params,
+            param_min=min_vals,
+            param_max=max_vals,
+            dropout=cfg.get_float('dropout', 0.0),
+            use_param_conditioning=use_param_conditioning,
+        )
+    else:
+        # Use variant
+        print(f"\nCreating {fno_variant} model...")
+        fno = _create_fno(
+            variant=fno_variant,
+            img_size=img_size,
+            n_params=n_params,
+            conditioning_channels=conditioning_channels,
+            large_scale_channels=large_scale_channels,
+            param_min=min_vals,
+            param_max=max_vals,
+            dropout=cfg.get_float('dropout', 0.0),
+        )
+    
+    model = LightFNOVDM(
+        fno_model=fno,
+        learning_rate=cfg.get_float('learning_rate', 1e-4),
+        weight_decay=cfg.get_float('weight_decay', 1e-5),
+        gamma_min=cfg.get_float('gamma_min', -13.3),
+        gamma_max=cfg.get_float('gamma_max', 5.0),
+        n_sampling_steps=cfg.get_int('n_sampling_steps', 256),
+        loss_type=cfg.get_str('loss_type', 'mse'),
+        lr_scheduler=cfg.get_str('lr_scheduler', 'cosine'),
+        warmup_steps=cfg.get_int('warmup_steps', 1000),
+        image_shape=(3, img_size, img_size),
+    )
+    
+    return model, 'val/loss'
+
+
+def create_fno_flow_model(cfg, min_vals, max_vals, use_param_conditioning):
+    """Create FNO model with Flow Matching training."""
+    from vdm.fno_model import LightFNOFlow
+    from vdm.fno import create_fno_model as _create_fno
+    
+    conditioning_channels = cfg.get_int('conditioning_channels', 1)
+    large_scale_channels = cfg.get_int('large_scale_channels', 3)
+    img_size = cfg.get_int('img_size', 128)
+    n_params = cfg.get_int('n_params', 35) if use_param_conditioning else 0
+    
+    # Get FNO variant
+    fno_variant = cfg.get_str('fno_variant', 'FNO-B')
+    
+    print(f"\nCreating {fno_variant} model for Flow Matching...")
+    fno = _create_fno(
+        variant=fno_variant,
+        img_size=img_size,
+        n_params=n_params,
+        conditioning_channels=conditioning_channels,
+        large_scale_channels=large_scale_channels,
+        param_min=min_vals,
+        param_max=max_vals,
+        dropout=cfg.get_float('dropout', 0.0),
+    )
+    
+    model = LightFNOFlow(
+        fno_model=fno,
+        learning_rate=cfg.get_float('learning_rate', 1e-4),
+        weight_decay=cfg.get_float('weight_decay', 1e-5),
+        n_sampling_steps=cfg.get_int('n_sampling_steps', 50),
+        lr_scheduler=cfg.get_str('lr_scheduler', 'cosine'),
+        warmup_steps=cfg.get_int('warmup_steps', 1000),
+        image_shape=(3, img_size, img_size),
+        x0_mode=cfg.get_str('x0_mode', 'zeros'),
+    )
+    
+    return model, 'val/loss'
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -1176,6 +1287,10 @@ Examples:
         model, early_stopping_monitor = create_consistency_model(cfg, min_vals, max_vals, use_param_conditioning)
     elif args.model == 'dit':
         model, early_stopping_monitor = create_dit_model(cfg, min_vals, max_vals, use_param_conditioning)
+    elif args.model == 'fno':
+        model, early_stopping_monitor = create_fno_model(cfg, min_vals, max_vals, use_param_conditioning)
+    elif args.model == 'fno_flow':
+        model, early_stopping_monitor = create_fno_flow_model(cfg, min_vals, max_vals, use_param_conditioning)
     else:
         raise ValueError(f"Unknown model type: {args.model}")
     
