@@ -40,6 +40,7 @@ Usage:
     samples = model.draw_samples(conditioning, batch_size=8)
 """
 
+import math
 import torch
 import numpy as np
 from torch import nn, Tensor
@@ -114,7 +115,21 @@ class Interpolant(nn.Module):
         t = t.view(t.shape[0], *([1] * 3))  # (B, 1, 1, 1)
         return self.sigma * torch.sqrt(2 * t * (1 - t))
     
-    def sample_xt(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
+    def get_sigma_t_derivative(self, t: Tensor) -> Tensor:
+        """
+        Compute d/dt[sigma(t)] for stochastic interpolant loss target.
+        
+        d/dt[sigma * sqrt(2*t*(1-t))] = sigma * (1 - 2t) / sqrt(2*t*(1-t))
+        
+        This is needed for the correct loss formulation per Albergo et al. (2023).
+        """
+        t = t.view(t.shape[0], *([1] * 3))  # (B, 1, 1, 1)
+        # Avoid division by zero at t=0 and t=1 by clamping
+        t_clamped = torch.clamp(t, min=1e-5, max=1 - 1e-5)
+        denominator = torch.sqrt(2 * t_clamped * (1 - t_clamped))
+        return self.sigma * (1 - 2 * t) / denominator
+    
+    def sample_xt(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tuple[Tensor, Optional[Tensor]]:
         """
         Sample x_t from the interpolant distribution.
         
@@ -128,15 +143,16 @@ class Interpolant(nn.Module):
         
         Returns:
             x_t: Interpolated sample (B, C, H, W)
+            epsilon: The noise used (B, C, H, W) if stochastic, else None
         """
         mu_t = self.get_mu_t(x0, x1, t)
         
         if self.use_stochastic_interpolant and self.sigma > 0:
             sigma_t = self.get_sigma_t(t)
             epsilon = torch.randn_like(mu_t)
-            return mu_t + sigma_t * epsilon
+            return mu_t + sigma_t * epsilon, epsilon
         
-        return mu_t
+        return mu_t, None
     
     def get_velocity(self, x0: Tensor, x1: Tensor) -> Tensor:
         """
@@ -164,7 +180,13 @@ class Interpolant(nn.Module):
         """
         Compute the flow matching loss.
         
-        Loss = E_t E_{x_0, x_1} || v_theta(t, x_t, cond) - (x_1 - x_0) ||^2
+        For deterministic interpolants:
+            Loss = E_t E_{x_0, x_1} || v_theta(t, x_t, cond) - (x_1 - x_0) ||^2
+        
+        For stochastic interpolants (Albergo et al. 2023, Eq. 2.13):
+            Loss = E_t E_{x_0, x_1, z} || v_theta(t, x_t, cond) - (x_1 - x_0 + gamma_dot(t) * z) ||^2
+        
+        where gamma_dot(t) = d/dt[sigma * sqrt(2*t*(1-t))]
         
         Args:
             x0: Source (B, C, H, W) - zeros or noise
@@ -179,11 +201,18 @@ class Interpolant(nn.Module):
         if t is None:
             t = torch.rand(x0.shape[0], device=x0.device, dtype=x0.dtype)
         
-        # Sample x_t from interpolant
-        x_t = self.sample_xt(x0, x1, t)
+        # Sample x_t from interpolant (also returns epsilon if stochastic)
+        x_t, epsilon = self.sample_xt(x0, x1, t)
         
-        # Compute true velocity
+        # Compute true velocity target
+        # Base velocity: d/dt[(1-t)*x0 + t*x1] = x1 - x0
         v_true = self.get_velocity(x0, x1)
+        
+        # For stochastic interpolants, add the noise term: gamma_dot(t) * z
+        # This follows Eq. 2.13 from Albergo et al. (2023)
+        if self.use_stochastic_interpolant and self.sigma > 0 and epsilon is not None:
+            gamma_dot = self.get_sigma_t_derivative(t)
+            v_true = v_true + gamma_dot * epsilon
         
         # Predict velocity (pass param_conditioning to velocity model)
         v_pred = self.velocity_model(t, x_t, conditioning, param_conditioning)
@@ -201,24 +230,36 @@ class Interpolant(nn.Module):
         param_conditioning: Optional[Tensor] = None,
         n_steps: int = 50,
         return_trajectory: bool = False,
+        stochastic: bool = None,
+        sde_noise_scale: float = None,
     ) -> Union[Tensor, List[Tensor]]:
         """
-        Generate samples by integrating the ODE.
+        Generate samples by integrating the ODE/SDE.
         
-        dx/dt = v(t, x, cond)
+        ODE mode: dx/dt = v(t, x, cond)
+        SDE mode: dx = v(t, x, cond) dt + sigma * sqrt(dt) * dW
         
-        Uses Euler integration from t=0 to t=1.
+        Uses Euler(-Maruyama) integration from t=0 to t=1.
         
         Args:
-            x0: Initial state (B, C, H, W) - typically zeros or noise
+            x0: Initial state (B, C, H, W) - typically DM condition or noise
             conditioning: Spatial conditioning (B, C_cond, H, W)
             param_conditioning: Parameter conditioning (B, N_params) - cosmological parameters
             n_steps: Number of integration steps
             return_trajectory: Whether to return full trajectory
+            stochastic: Whether to use SDE sampling (adds noise at each step).
+                       If None, uses self.use_stochastic_interpolant
+            sde_noise_scale: Noise scale for SDE sampling. If None, uses self.sigma
         
         Returns:
             x1: Final sample (B, C, H, W), or trajectory list
         """
+        # Determine whether to use stochastic sampling
+        if stochastic is None:
+            stochastic = self.use_stochastic_interpolant
+        if sde_noise_scale is None:
+            sde_noise_scale = self.sigma if self.sigma > 0 else 0.1  # Default noise scale
+        
         dt = 1.0 / n_steps
         x = x0.clone()
         
@@ -230,8 +271,15 @@ class Interpolant(nn.Module):
             # Predict velocity (pass param_conditioning)
             v = self.velocity_model(t, x, conditioning, param_conditioning)
             
-            # Euler step
+            # Euler step (deterministic part)
             x = x + v * dt
+            
+            # Add noise for SDE sampling (Euler-Maruyama)
+            # Scale noise by sqrt(dt) for proper Brownian motion scaling
+            # Also scale down noise as t approaches 1 to ensure convergence
+            if stochastic and i < n_steps - 1:  # Don't add noise on last step
+                noise_scale = sde_noise_scale * math.sqrt(dt) * (1.0 - (i + 1) * dt)
+                x = x + noise_scale * torch.randn_like(x)
             
             if return_trajectory:
                 trajectory.append(x.clone())

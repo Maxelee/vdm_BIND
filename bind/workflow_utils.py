@@ -280,64 +280,165 @@ class ConfigLoader:
 
     def _state_initialization(self):
         """
-        Find the best checkpoint, supporting multiple checkpoint formats:
+        Find the best checkpoint based on validation metrics from TensorBoard logs.
         
-        1. New format (epoch_checkpoint): epoch-epoch=XXX-step=YYY.ckpt (files)
-        2. Val checkpoint files: epoch=X-step=Y-val_elbo=Z.ckpt or epoch=X-step=Y-val_loss=Z.ckpt
-        3. Old format (val_checkpoint dirs): epoch=X-step=Y-val/ dirs with elbo=-X.XXX.ckpt inside
-        4. Latest checkpoints: latest-epoch=X-step=Y.ckpt (files)
+        For models that log val/elbo or val/loss (VDM, Triple, Interpolant, Consistency, DiT):
+          - Reads TensorBoard events to find step with best validation metric
+          - Selects checkpoint closest to that step
         
-        Priority: epoch-epoch* > val checkpoint files > val checkpoint dirs > latest files
+        For models without reliable validation metrics (DDPM, DSM, OT Flow):
+          - Falls back to latest checkpoint by step number
+        
+        Checkpoint patterns supported:
+        1. epoch-epoch=XXX-step=YYY.ckpt (epoch checkpoints)
+        2. epoch=X-step=Y-val_*.ckpt (validation checkpoints)
+        3. latest-epoch=X-step=Y.ckpt (step-based checkpoints)
         """
         self.tb_log_path = f"{self.tb_logs}/{self.model_name}/version_{self.version}/"
         
-        # Pattern 1: New epoch checkpoint files (epoch-epoch=XXX-step=YYY.ckpt)
-        ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch-epoch*.ckpt')
-        if not ckpts:
-            ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch-epoch*.ckpt', recursive=True)
+        # Collect all available checkpoints
+        all_ckpts = []
         
-        # Pattern 2: Val checkpoint files (epoch=X-step=Y-val_elbo=Z.ckpt or val_loss=Z.ckpt)
-        if not ckpts:
-            ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/epoch=*-val_*.ckpt')
-            if not ckpts:
-                ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch=*-val_*.ckpt', recursive=True)
+        # Pattern 1: Epoch checkpoint files
+        all_ckpts.extend(glob.glob(f'{self.tb_log_path}/checkpoints/epoch-epoch*.ckpt'))
+        all_ckpts.extend(glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch-epoch*.ckpt', recursive=True))
         
-        # Pattern 3: Old val checkpoint directories (epoch=X-step=Y-val/)
-        # These contain files like elbo=-5.514.ckpt or val_loss=0.123.ckpt
-        if not ckpts:
-            val_dirs = glob.glob(f'{self.tb_log_path}/checkpoints/epoch=*-val')
-            if not val_dirs:
-                val_dirs = glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch=*-val', recursive=True)
-            
-            if val_dirs:
-                # Sort directories by epoch number
-                val_dirs.sort(key=self._natural_sort_key)
-                # Get the latest epoch directory
-                best_dir = val_dirs[-1]
-                # Find the .ckpt file inside
-                inner_ckpts = glob.glob(os.path.join(best_dir, '*.ckpt'))
-                if inner_ckpts:
-                    # If multiple files, sort and take best (by metric value if present)
-                    inner_ckpts.sort(key=self._natural_sort_key)
-                    ckpts = [inner_ckpts[0]]  # Take the best one
+        # Pattern 2: Val checkpoint files
+        all_ckpts.extend(glob.glob(f'{self.tb_log_path}/checkpoints/epoch=*-val_*.ckpt'))
+        all_ckpts.extend(glob.glob(f'{self.tb_log_path}/**/checkpoints/epoch=*-val_*.ckpt', recursive=True))
         
-        # Pattern 4: Latest checkpoint files as fallback
-        if not ckpts:
-            ckpts = glob.glob(f'{self.tb_log_path}/checkpoints/latest-*.ckpt')
-            if not ckpts:
-                ckpts = glob.glob(f'{self.tb_log_path}/**/checkpoints/latest-*.ckpt', recursive=True)
+        # Pattern 3: Latest checkpoint files
+        all_ckpts.extend(glob.glob(f'{self.tb_log_path}/checkpoints/latest-*.ckpt'))
+        all_ckpts.extend(glob.glob(f'{self.tb_log_path}/**/checkpoints/latest-*.ckpt', recursive=True))
         
-        if ckpts:
-            ckpts.sort(key=self._natural_sort_key)
-            self.best_ckpt = ckpts[-1]
-        else:
+        # Remove duplicates while preserving order
+        all_ckpts = list(dict.fromkeys(all_ckpts))
+        
+        if not all_ckpts:
             self.best_ckpt = None
-
+            self._verbosity.vprint_summary("[ConfigLoader] No checkpoint found.")
+            return
+        
+        # Determine model type from model_name to decide checkpoint selection strategy
+        model_lower = self.model_name.lower()
+        use_latest = any(m in model_lower for m in ['ddpm', 'dsm', 'ot_flow', 'ot-flow'])
+        
+        if use_latest:
+            # For DDPM, DSM, OT Flow: use latest checkpoint by step
+            self._verbosity.vprint_debug(f"[ConfigLoader] Using latest checkpoint for {self.model_name}")
+            self.best_ckpt = self._select_latest_checkpoint(all_ckpts)
+        else:
+            # For VDM, Triple, Interpolant, Consistency, DiT: use best validation metric
+            self._verbosity.vprint_debug(f"[ConfigLoader] Looking for best validation checkpoint for {self.model_name}")
+            self.best_ckpt = self._select_best_validation_checkpoint(all_ckpts)
+        
         self._verbosity.vprint_debug(f"[ConfigLoader] TensorBoard log path: {self.tb_log_path}")
         if self.best_ckpt:
             self._verbosity.vprint_summary(f"[ConfigLoader] Found checkpoint: {self.best_ckpt}")
         else:
             self._verbosity.vprint_summary("[ConfigLoader] No checkpoint found.")
+    
+    def _select_latest_checkpoint(self, ckpts):
+        """Select checkpoint with highest step number."""
+        if not ckpts:
+            return None
+        ckpts.sort(key=self._natural_sort_key)
+        return ckpts[-1]
+    
+    def _select_best_validation_checkpoint(self, ckpts):
+        """
+        Select checkpoint closest to the step with best validation metric.
+        Falls back to latest checkpoint if TensorBoard logs unavailable.
+        """
+        if not ckpts:
+            return None
+        
+        # Try to read validation metrics from TensorBoard
+        best_step = self._get_best_validation_step()
+        
+        if best_step is None:
+            # Fallback to latest checkpoint
+            self._verbosity.vprint_debug("[ConfigLoader] Could not read validation metrics, using latest checkpoint")
+            return self._select_latest_checkpoint(ckpts)
+        
+        self._verbosity.vprint_debug(f"[ConfigLoader] Best validation at step {best_step}")
+        
+        # Extract step number from each checkpoint and find closest to best_step
+        ckpt_steps = []
+        for ckpt in ckpts:
+            step = self._extract_step_from_checkpoint(ckpt)
+            if step is not None:
+                ckpt_steps.append((ckpt, step))
+        
+        if not ckpt_steps:
+            return self._select_latest_checkpoint(ckpts)
+        
+        # Find checkpoint with step closest to (but not exceeding) best_step
+        # If no checkpoint at or before best_step, take the closest one after
+        valid_ckpts = [(c, s) for c, s in ckpt_steps if s <= best_step]
+        
+        if valid_ckpts:
+            # Take checkpoint closest to best_step (highest step <= best_step)
+            best_ckpt = max(valid_ckpts, key=lambda x: x[1])[0]
+        else:
+            # All checkpoints are after best_step, take the earliest one
+            best_ckpt = min(ckpt_steps, key=lambda x: x[1])[0]
+        
+        return best_ckpt
+    
+    def _get_best_validation_step(self):
+        """
+        Read TensorBoard logs to find the step with best validation metric.
+        Returns None if logs cannot be read.
+        """
+        try:
+            from tensorboard.backend.event_processing import event_accumulator
+            
+            ea = event_accumulator.EventAccumulator(self.tb_log_path)
+            ea.Reload()
+            
+            scalars = ea.Tags().get('scalars', [])
+            
+            # Try different validation metric names
+            val_metrics = ['val/elbo', 'val/loss', 'val_elbo', 'val_loss']
+            
+            for metric in val_metrics:
+                if metric in scalars:
+                    vals = ea.Scalars(metric)
+                    if vals:
+                        # Find step with minimum validation metric
+                        best = min(vals, key=lambda x: x.value)
+                        self._verbosity.vprint_debug(
+                            f"[ConfigLoader] Found {metric}: best={best.value:.4f} at step {best.step}"
+                        )
+                        return best.step
+            
+            self._verbosity.vprint_debug(f"[ConfigLoader] No validation metrics found in TensorBoard logs")
+            return None
+            
+        except ImportError:
+            self._verbosity.vprint_debug("[ConfigLoader] tensorboard not installed, cannot read validation metrics")
+            return None
+        except Exception as e:
+            self._verbosity.vprint_debug(f"[ConfigLoader] Error reading TensorBoard logs: {e}")
+            return None
+    
+    def _extract_step_from_checkpoint(self, ckpt_path):
+        """Extract step number from checkpoint filename."""
+        filename = os.path.basename(ckpt_path)
+        
+        # Try different patterns
+        # Pattern: step=12345 or step-12345
+        match = re.search(r'step[=\-](\d+)', filename)
+        if match:
+            return int(match.group(1))
+        
+        # Pattern: epoch-epoch=XXX-step=YYY (older format with step at end)
+        match = re.search(r'-(\d+)\.ckpt$', filename)
+        if match:
+            return int(match.group(1))
+        
+        return None
 
     @staticmethod
     def _natural_sort_key(s):

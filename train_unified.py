@@ -1157,8 +1157,8 @@ Examples:
     # Create model based on type
     print(f"\n🔧 Creating {args.model.upper()} model...")
     
-    # DDP settings - Triple VDM needs find_unused_parameters
-    find_unused_parameters = args.model in ['triple', 'interpolant', 'ot_flow', 'consistency']
+    # DDP settings - Some models need find_unused_parameters due to conditional branches
+    find_unused_parameters = args.model in ['triple', 'interpolant', 'ot_flow', 'consistency', 'dsm']
     
     if args.model == 'vdm':
         model, early_stopping_monitor = create_vdm_model(cfg, min_vals, max_vals, use_param_conditioning)

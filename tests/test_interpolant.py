@@ -97,10 +97,63 @@ class TestInterpolant:
         x1 = torch.randn(batch_size, 3, 32, 32)
         t = torch.rand(batch_size)
         
-        x_t = interpolant.sample_xt(x0, x1, t)
+        x_t, epsilon = interpolant.sample_xt(x0, x1, t)
         mu_t = interpolant.get_mu_t(x0, x1, t)
         
         assert torch.allclose(x_t, mu_t, atol=1e-6)
+        assert epsilon is None  # No epsilon for deterministic interpolant
+    
+    def test_sample_xt_stochastic(self):
+        """Test that sample_xt with stochasticity adds noise and returns epsilon."""
+        from vdm.interpolant_model import Interpolant
+        
+        class DummyVelocity(torch.nn.Module):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
+                return torch.zeros_like(x)
+        
+        sigma = 0.1
+        interpolant = Interpolant(velocity_model=DummyVelocity(), use_stochastic_interpolant=True, sigma=sigma)
+        
+        batch_size = 4
+        x0 = torch.randn(batch_size, 3, 32, 32)
+        x1 = torch.randn(batch_size, 3, 32, 32)
+        t = torch.full((batch_size,), 0.5)  # t=0.5 for maximum noise
+        
+        x_t, epsilon = interpolant.sample_xt(x0, x1, t)
+        mu_t = interpolant.get_mu_t(x0, x1, t)
+        sigma_t = interpolant.get_sigma_t(t)
+        
+        assert epsilon is not None
+        # x_t should be mu_t + sigma_t * epsilon
+        expected_x_t = mu_t + sigma_t * epsilon
+        assert torch.allclose(x_t, expected_x_t, atol=1e-6)
+    
+    def test_stochastic_loss_includes_noise_term(self):
+        """Test that stochastic interpolant loss target includes gamma_dot * z."""
+        from vdm.interpolant_model import Interpolant
+        
+        # Create a velocity model that just returns the input so we can inspect the loss
+        class IdentityVelocity(torch.nn.Module):
+            def forward(self, t, x, conditioning=None, param_conditioning=None):
+                return x  # Return x so loss = MSE(x, v_true)
+        
+        sigma = 0.1
+        interp_stoch = Interpolant(velocity_model=IdentityVelocity(), use_stochastic_interpolant=True, sigma=sigma)
+        interp_det = Interpolant(velocity_model=IdentityVelocity(), use_stochastic_interpolant=False)
+        
+        batch_size = 4
+        x0 = torch.randn(batch_size, 3, 32, 32)
+        x1 = torch.randn(batch_size, 3, 32, 32)
+        t = torch.full((batch_size,), 0.5)  # t=0.5 for maximum effect
+        
+        # Compute losses - they should differ because stochastic includes gamma_dot * z term
+        torch.manual_seed(42)
+        loss_stoch = interp_stoch.compute_loss(x0, x1, t=t)
+        torch.manual_seed(42)
+        loss_det = interp_det.compute_loss(x0, x1, t=t)
+        
+        # Losses should be different due to the noise term
+        assert not torch.allclose(loss_stoch, loss_det)
 
 
 class TestLightInterpolant:

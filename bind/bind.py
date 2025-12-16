@@ -285,15 +285,15 @@ class BIND:
                 if self.dim == '3d':
                     scale_map = self._extract_region_3d(self.sim_grid, pos, scale_size, 
                                                         boxsize_mpc, self.gridsize)
-                    # Downsample to target_res if needed
+                    # Resize to target_res if needed
                     if scale_map.shape[0] != target_res:
-                        scale_map = self._downsample_3d(scale_map, target_res)
+                        scale_map = self._resize_3d(scale_map, target_res)
                 else:
                     scale_map = self._extract_projection_2d(self.sim_grid, pos, scale_size, 
                                                             boxsize_mpc, self.gridsize, self.axis)
-                    # Downsample to target_res if needed
+                    # Resize to target_res if needed (handles both up and downsampling)
                     if scale_map.shape[0] != target_res:
-                        scale_map = self._downsample_2d(scale_map, target_res)
+                        scale_map = self._resize_2d(scale_map, target_res)
                     # scale_map /= omega_m  # Scale by omega_m for 2D
                 
                 scale_map_normalized = self._normalize_condition(scale_map)
@@ -350,6 +350,26 @@ class BIND:
             print(f"[BIND] Extracted {len(extraction_results['conditions'])} halos.")
         return self.extracted
     
+    def _resize_2d(self, field: np.ndarray, target_res: int) -> np.ndarray:
+        """
+        Resize 2D field to target resolution (supports both up and downsampling).
+        
+        Args:
+            field: 2D array to resize
+            target_res: Target resolution
+            
+        Returns:
+            Resized 2D array
+        """
+        current_res = field.shape[0]
+        if current_res == target_res:
+            return field
+        
+        # Use torch interpolation for flexible resizing
+        field_tensor = torch.tensor(field, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        resized = F.interpolate(field_tensor, size=(target_res, target_res), mode='bilinear', align_corners=False)
+        return resized.squeeze(0).squeeze(0).numpy()
+    
     def _downsample_2d(self, field: np.ndarray, target_res: int) -> np.ndarray:
         """
         Downsample 2D field to target resolution using averaging.
@@ -369,6 +389,26 @@ class BIND:
         # Reshape and average
         downsampled = field.reshape(target_res, factor, target_res, factor).mean(axis=(1, 3))
         return downsampled
+    
+    def _resize_3d(self, field: np.ndarray, target_res: int) -> np.ndarray:
+        """
+        Resize 3D field to target resolution (supports both up and downsampling).
+        
+        Args:
+            field: 3D array to resize
+            target_res: Target resolution
+            
+        Returns:
+            Resized 3D array
+        """
+        current_res = field.shape[0]
+        if current_res == target_res:
+            return field
+        
+        # Use torch interpolation for flexible resizing
+        field_tensor = torch.tensor(field, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        resized = F.interpolate(field_tensor, size=(target_res, target_res, target_res), mode='trilinear', align_corners=False)
+        return resized.squeeze(0).squeeze(0).numpy()
     
     def _downsample_3d(self, field: np.ndarray, target_res: int) -> np.ndarray:
         """

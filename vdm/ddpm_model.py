@@ -224,8 +224,15 @@ class LightScoreModel(LightningModule):
         DSM loss: E_t E_{x_0} E_{ε} [ ||s_θ(x_t, t) - ∇_{x_t} log p(x_t|x_0)||^2 ]
         
         For VP-SDE: ∇ log p(x_t|x_0) = -ε / σ(t)
+        
+        Note: score_models.loss_fn uses sum/B which doesn't normalize by image size.
+        We divide by the number of elements per sample to get proper mean.
         """
-        return self.score_model.loss_fn(x, *args)
+        raw_loss = self.score_model.loss_fn(x, *args)
+        # Normalize by number of elements per sample (C * H * W)
+        # score_models uses sum/B, we want mean over all elements
+        n_elements = x[0].numel()  # Number of elements per sample
+        return raw_loss / n_elements
     
     def training_step(self, batch: Tuple, batch_idx: int) -> Tensor:
         """Training step with DSM loss."""
