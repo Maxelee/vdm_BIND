@@ -39,6 +39,37 @@ bind_predict.py → bind/bind.py (user-friendly CLI)
 - **Purpose**: Apply trained models to full N-body simulations
 - **Key steps**: Voxelize → Extract halos → Generate → Paste back
 
+### Backbone Abstraction (Generative Zoo)
+
+The backbone abstraction layer enables mix-and-match of methods and architectures:
+
+```python
+from vdm.backbones import create_backbone, list_backbones
+
+# List available backbones
+print(list_backbones())  # ['unet', 'dit', 'fno', 'dit-s', 'dit-b', ...]
+
+# Create backbone with unified interface
+backbone = create_backbone("dit-b", img_size=128, param_dim=6)
+output = backbone(x_t, t, conditioning, param_conditioning)
+```
+
+**Standard Interface**: All backbones follow:
+```python
+forward(x_t, t, conditioning=None, param_conditioning=None) -> prediction
+# x_t: (B, C, H, W) - Noisy input
+# t: (B,) - Time in [0, 1], where t=0 is clean, t=1 is noisy
+# conditioning: (B, C_cond, H, W) - Spatial conditioning (DM + large-scale)
+# param_conditioning: (B, N_params) - Cosmological parameters
+```
+
+**Available Backbones**:
+| Backbone | Variants | Description |
+|----------|----------|-------------|
+| UNet | unet-s, unet-b, unet-l | CNN with attention, Fourier features |
+| DiT | dit-s, dit-b, dit-l, dit-xl | Vision Transformer with adaLN |
+| FNO | fno-s, fno-b, fno-l, fno-xl | Fourier Neural Operator (spectral conv) |
+
 ## Project Structure
 
 ```
@@ -49,6 +80,7 @@ vdm_BIND/
 ├── run_bind_unified.py       # BIND inference on simulation suites
 ├── bind_predict.py           # User-friendly BIND CLI for custom simulations
 ├── vdm/                      # Core model package
+│   ├── backbones.py          # Backbone abstraction (Generative Zoo)
 │   ├── networks_clean.py     # UNet architecture
 │   ├── vdm_model_clean.py    # 3-channel LightCleanVDM
 │   ├── vdm_model_triple.py   # 3 independent VDMs
@@ -57,6 +89,8 @@ vdm_BIND/
 │   ├── interpolant_model.py  # Flow matching / stochastic interpolants
 │   ├── ot_flow_model.py      # Optimal transport flow matching
 │   ├── consistency_model.py  # Consistency models
+│   ├── fno.py                # Fourier Neural Operator architecture
+│   ├── fno_model.py          # FNO Lightning wrappers (VDM, Flow)
 │   ├── dit.py                # Diffusion Transformer architecture
 │   ├── dit_model.py          # DiT PyTorch Lightning wrapper
 │   ├── uncertainty.py        # Uncertainty quantification (MC Dropout, ensemble)
@@ -189,6 +223,7 @@ from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 |------|---------|
 | `config.py` | Centralized path configuration with environment variable support |
 | `train_unified.py` | **Unified training script for all model types** |
+| `vdm/backbones.py` | Backbone abstraction: `create_backbone()`, UNet/DiT/FNO wrappers |
 | `vdm/networks_clean.py` | UNet architecture with Fourier features, attention, cross-attention |
 | `vdm/vdm_model_clean.py` | 3-channel VDM with focal loss, per-channel weighting |
 | `vdm/vdm_model_triple.py` | 3 independent single-channel VDMs |
@@ -197,6 +232,8 @@ from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 | `vdm/dsm_model.py` | Denoising Score Matching |
 | `vdm/ot_flow_model.py` | Optimal Transport Flow Matching |
 | `vdm/consistency_model.py` | Consistency Models |
+| `vdm/fno.py` | Fourier Neural Operator architecture (spectral conv, FiLM conditioning) |
+| `vdm/fno_model.py` | FNO Lightning wrappers (LightFNOVDM, LightFNOFlow) |
 | `vdm/dit.py` | Diffusion Transformer architecture (adaLN-Zero, patch embedding) |
 | `vdm/dit_model.py` | DiT PyTorch Lightning wrapper (LightDiTVDM) |
 | `vdm/uncertainty.py` | Uncertainty quantification: MC Dropout, multi-realization, calibration |
