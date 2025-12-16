@@ -130,8 +130,20 @@ class LightDiTVDM(LightningModule):
     def gamma(self, t: Tensor) -> Tensor:
         """
         Compute gamma(t) = log(SNR(t)) using linear schedule in log-space.
+        
+        VDM Convention (matching learned_nn schedule behavior):
+        - t=0: high gamma (clean, alpha≈1, sigma≈0) - data end
+        - t=1: low gamma (noisy, alpha≈0, sigma≈1) - noise end
+        
+        This allows training where:
+        - At t≈0: z_t ≈ x (clean data, model learns identity)
+        - At t≈1: z_t ≈ noise (pure noise, model learns to predict noise from noise)
+        
+        And sampling from t=1 (noise) to t=0 (clean).
+        
+        Formula: gamma = gamma_max - (gamma_max - gamma_min) * t
         """
-        return self.gamma_max + (self.gamma_min - self.gamma_max) * t
+        return self.gamma_max - (self.gamma_max - self.gamma_min) * t
     
     def sigma_and_alpha(self, gamma: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -245,7 +257,14 @@ class LightDiTVDM(LightningModule):
         return_trajectory: bool = False,
     ) -> Union[Tensor, List[Tensor]]:
         """
-        Generate samples using DDPM sampling.
+        Generate samples using VDM ancestral sampling.
+        
+        With gamma = gamma_max - (gamma_max - gamma_min) * t:
+        - t=0: gamma_max (clean, alpha≈1, sigma≈0)
+        - t=1: gamma_min (noisy, alpha≈0, sigma≈1)
+        
+        We iterate in gamma space from gamma_min to gamma_max (denoising),
+        which corresponds to t going from 1 to 0.
         
         Args:
             conditioning: (B, C_cond, H, W) - spatial conditioning
@@ -263,52 +282,54 @@ class LightDiTVDM(LightningModule):
         device = conditioning.device
         
         # Start from pure noise
-        x = torch.randn(B, self.n_channels, *self.image_shape[1:], device=device)
+        z = torch.randn(B, self.n_channels, *self.image_shape[1:], device=device)
         
-        trajectory = [x] if return_trajectory else None
+        trajectory = [z] if return_trajectory else None
         
-        # DDPM sampling loop
-        timesteps = torch.linspace(1, 0, n_steps + 1, device=device)
+        # Work directly in gamma space: go from gamma_min (noisy) to gamma_max (clean)
+        gamma_steps = torch.linspace(self.gamma_min, self.gamma_max, n_steps + 1, device=device)
         
         for i in range(n_steps):
-            t = timesteps[i].expand(B)
-            t_next = timesteps[i + 1].expand(B)
+            gamma_s = gamma_steps[i]      # Current gamma (lower = noisier)
+            gamma_t = gamma_steps[i + 1]  # Next gamma (higher = cleaner)
             
-            gamma_t = self.gamma(t)
-            gamma_next = self.gamma(t_next)
-            
+            # Get sigma and alpha for current and next steps
+            sigma_s, alpha_s = self.sigma_and_alpha(gamma_s)
             sigma_t, alpha_t = self.sigma_and_alpha(gamma_t)
-            sigma_next, alpha_next = self.sigma_and_alpha(gamma_next)
             
-            # Predict noise
-            eps_pred = self.score_model(x, gamma_t, conditioning, param_conditioning)
+            # Predict noise at current noise level
+            # Model was trained with gamma as conditioning
+            gamma_s_batch = gamma_s.expand(B)
+            eps_pred = self.score_model(z, gamma_s_batch, conditioning, param_conditioning)
             
-            # DDPM update
-            # x_0 estimate
-            x0_pred = (x - sigma_t[:, None, None, None] * eps_pred) / alpha_t[:, None, None, None]
+            # VDM update formula (from DDPM reverse process)
+            # c = 1 - exp(gamma_s - gamma_t) = 1 - (sigma_s^2 * alpha_t^2) / (sigma_t^2 * alpha_s^2)
+            # Since gamma_s < gamma_t (we're denoising), c > 0
+            c = -torch.expm1(gamma_s - gamma_t)  # = 1 - exp(gamma_s - gamma_t)
             
-            # Compute mean for next step
+            # Update z: remove predicted noise, rescale, optionally add fresh noise
+            # Mean update: z_mean = (alpha_t / alpha_s) * z - (sigma_t * c / sigma_s) * eps_pred
+            # Noise coefficient: sqrt(sigma_t^2 * c)
+            
+            alpha_ratio = alpha_t / (alpha_s + 1e-8)
+            noise_coef = sigma_t * c / (sigma_s + 1e-8)
+            
+            z_mean = alpha_ratio * z - noise_coef * eps_pred
+            
             if i < n_steps - 1:
-                # Not the last step - add noise
-                c0 = alpha_next / alpha_t
-                c1 = sigma_next * torch.sqrt(1 - (alpha_next / alpha_t) ** 2 * (sigma_t / sigma_next) ** 2)
-                
-                x = c0[:, None, None, None] * x + \
-                    (alpha_next - c0 * alpha_t)[:, None, None, None] * x0_pred / alpha_t[:, None, None, None]
-                
-                # Add noise
-                noise = torch.randn_like(x)
-                x = x + c1[:, None, None, None] * noise
+                # Add stochastic noise (except at last step)
+                # Variance: sigma_t^2 * c * (1 - c) approximately, but simplified to sigma_t * sqrt(c)
+                noise_std = sigma_t * torch.sqrt(c)
+                z = z_mean + noise_std * torch.randn_like(z)
             else:
-                # Last step - just return prediction
-                x = x0_pred
+                z = z_mean
             
             if return_trajectory:
-                trajectory.append(x)
+                trajectory.append(z)
         
         if return_trajectory:
             return trajectory
-        return x
+        return z
     
     @torch.no_grad()
     def draw_samples(
