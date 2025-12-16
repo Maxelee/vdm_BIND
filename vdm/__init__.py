@@ -9,11 +9,38 @@ This package provides:
 - LightInterpolant: Lightning module for flow matching / stochastic interpolants
 - LightDSM: Lightning module for DSM using custom UNet (fair comparison with VDM)
 - AstroDataset: Dataset class for cosmological simulation data
+
+Verbosity Control
+-----------------
+Control output verbosity across the package:
+
+>>> import vdm
+>>> vdm.set_verbosity('silent')   # No output
+>>> vdm.set_verbosity('summary')  # Minimal output (default)
+>>> vdm.set_verbosity('debug')    # Full verbose output
+
+>>> with vdm.quiet():
+...     # All output suppressed in this block
+...     model = load_model()
 """
 
 from .networks_clean import UNetVDM
 from .vdm_model_clean import CleanVDM, LightCleanVDM
 from .astro_dataset import get_astro_data
+
+# Verbosity control
+from .verbosity import (
+    set_verbosity,
+    get_verbosity,
+    quiet,
+    verbosity,
+    vprint,
+    vprint_summary,
+    vprint_debug,
+    SILENT,
+    SUMMARY,
+    DEBUG,
+)
 
 # Try to import DDPM module (requires score_models package)
 try:
@@ -29,6 +56,7 @@ from .interpolant_model import LightInterpolant, Interpolant
 from .dsm_model import LightDSM
 
 __all__ = [
+    # Core models
     'UNetVDM',
     'CleanVDM', 
     'LightCleanVDM',
@@ -36,6 +64,17 @@ __all__ = [
     'LightInterpolant',
     'Interpolant',
     'LightDSM',
+    # Verbosity control
+    'set_verbosity',
+    'get_verbosity',
+    'quiet',
+    'verbosity',
+    'vprint',
+    'vprint_summary',
+    'vprint_debug',
+    'SILENT',
+    'SUMMARY',
+    'DEBUG',
 ]
 
 if _HAS_DDPM:

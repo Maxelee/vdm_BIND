@@ -24,6 +24,17 @@ This document outlines proposed issues to improve VDM-BIND's usability, generali
 
 ---
 
+### ~~Issue #3: Add comprehensive API documentation~~ ✅
+**Status:** COMPLETED
+**Branch:** `feature/docs-and-verbosity`
+- ✅ Created Sphinx documentation structure (`docs/`)
+- ✅ Added model documentation with math, references, usage examples
+- ✅ Added concept documentation (uncertainty, ensemble, benchmark)
+- ✅ Added API reference for vdm and bind packages
+- ✅ Added quick start and installation guides
+
+---
+
 ### ~~Issue #7: Abstract simulation data interface~~ ✅
 **Status:** COMPLETED (merged to main)
 **Branch:** `feature/data-interface`
@@ -71,18 +82,16 @@ This document outlines proposed issues to improve VDM-BIND's usability, generali
 
 ---
 
-## 🏷️ REMAINING: Documentation & Usability
+### ~~Issue #18: Configurable verbosity levels for model loading and generation~~ ✅
+**Status:** COMPLETED
+**Branch:** `feature/docs-and-verbosity`
+- ✅ Created `vdm/verbosity.py` module with SILENT/SUMMARY/DEBUG levels
+- ✅ Updated `bind/workflow_utils.py` to use verbosity system
+- ✅ Added `set_verbosity()`, `get_verbosity()`, `quiet()` context manager
+- ✅ Exported verbosity functions from `vdm/__init__.py`
+- ✅ Backward compatible (default: SUMMARY level)
 
-### Issue #3: Add comprehensive API documentation
-**Labels:** `documentation`, `enhancement`
-**Branch:** `docs/api-reference`
-**Status:** NOT STARTED
-
-**Description:**
-- Add docstrings to all public functions
-- Generate Sphinx/MkDocs API reference
-- Add usage examples in docstrings
-- Create "Quick Start" guide for common workflows
+---
 
 ---
 
@@ -253,7 +262,7 @@ Quantify prediction uncertainty:
 | #16 | Standardized benchmark suite | ✅ DONE |
 | #17 | Uncertainty quantification | ✅ DONE |
 
-### 🔄 Remaining Issues (6/17)
+### 🔄 Remaining Issues (7/18)
 
 | Issue | Priority | Effort | Impact | Category |
 |-------|----------|--------|--------|----------|
@@ -263,6 +272,7 @@ Quantify prediction uncertainty:
 | #11 3D optimization | 🔴 High | Large | High | Performance |
 | #12 Distributed inference | 🟢 Low | Large | Medium | Performance |
 | #13 Model export (ONNX) | 🟢 Low | Medium | Medium | Deployment |
+| #18 Verbosity control | 🟡 Medium | Small | High | Usability |
 
 ---
 

@@ -13,6 +13,11 @@ from vdm.astro_dataset import get_astro_data
 from vdm import vdm_model_clean as vdm_module, networks_clean as networks
 from vdm import vdm_model_triple as vdm_triple_module
 from vdm.utils import draw_figure
+from vdm.verbosity import (
+    vprint, vprint_summary, vprint_debug, 
+    SILENT, SUMMARY, DEBUG,
+    VerbosityContext, verbose_to_level
+)
 import torch
 import re
 import glob
@@ -25,23 +30,31 @@ import numpy as np
 # Import centralized path configuration
 from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 
-def load_normalization_stats(base_path=None):
+def load_normalization_stats(base_path=None, verbosity=None):
     """
     Load normalization statistics from .npz files.
     
-    Args:
-        base_path: Directory containing the normalization .npz files.
-                   Defaults to NORMALIZATION_STATS_DIR from config.py
+    Parameters
+    ----------
+    base_path : str, optional
+        Directory containing the normalization .npz files.
+        Defaults to NORMALIZATION_STATS_DIR from config.py
+    verbosity : int or str or bool, optional
+        Verbosity level. If None, uses global setting.
+        If bool, True=DEBUG, False=SILENT.
     
-    Returns:
-        dict with keys:
-            - dm_mag_mean, dm_mag_std
-            - gas_mag_mean, gas_mag_std
-            - star_mag_mean, star_mag_std
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        - dm_mag_mean, dm_mag_std
+        - gas_mag_mean, gas_mag_std
+        - star_mag_mean, star_mag_std
     """
     if base_path is None:
         base_path = NORMALIZATION_STATS_DIR
     
+    ctx = VerbosityContext(verbosity)
     stats = {}
     
     # Load DM stats
@@ -50,7 +63,7 @@ def load_normalization_stats(base_path=None):
         dm_stats = np.load(dm_path)
         stats['dm_mag_mean'] = float(dm_stats['dm_mag_mean'])
         stats['dm_mag_std'] = float(dm_stats['dm_mag_std'])
-        print(f"✓ Loaded DM normalization: mean={stats['dm_mag_mean']:.6f}, std={stats['dm_mag_std']:.6f}")
+        ctx.vprint_debug(f"✓ Loaded DM normalization: mean={stats['dm_mag_mean']:.6f}, std={stats['dm_mag_std']:.6f}")
     else:
         raise FileNotFoundError(f"DM normalization file not found: {dm_path}")
     
@@ -60,7 +73,7 @@ def load_normalization_stats(base_path=None):
         gas_stats = np.load(gas_path)
         stats['gas_mag_mean'] = float(gas_stats['gas_mag_mean'])
         stats['gas_mag_std'] = float(gas_stats['gas_mag_std'])
-        print(f"✓ Loaded Gas normalization: mean={stats['gas_mag_mean']:.6f}, std={stats['gas_mag_std']:.6f}")
+        ctx.vprint_debug(f"✓ Loaded Gas normalization: mean={stats['gas_mag_mean']:.6f}, std={stats['gas_mag_std']:.6f}")
     else:
         raise FileNotFoundError(f"Gas normalization file not found: {gas_path}")
     
@@ -70,7 +83,7 @@ def load_normalization_stats(base_path=None):
         star_stats = np.load(star_path)
         stats['star_mag_mean'] = float(star_stats['star_mag_mean'])
         stats['star_mag_std'] = float(star_stats['star_mag_std'])
-        print(f"✓ Loaded Stellar normalization: mean={stats['star_mag_mean']:.6f}, std={stats['star_mag_std']:.6f}")
+        ctx.vprint_debug(f"✓ Loaded Stellar normalization: mean={stats['star_mag_mean']:.6f}, std={stats['star_mag_std']:.6f}")
     else:
         raise FileNotFoundError(f"Stellar normalization file not found: {star_path}")
     
@@ -78,11 +91,36 @@ def load_normalization_stats(base_path=None):
 
 
 class ConfigLoader:
-    """Load and manage configuration parameters from an INI file."""
+    """
+    Load and manage configuration parameters from an INI file.
+    
+    Parameters
+    ----------
+    config_path : str
+        Path to the INI configuration file.
+    verbose : bool or int or str, optional
+        Verbosity level. If bool, True=DEBUG, False=SILENT.
+        If int/str, uses that level directly.
+    train_samples : bool, optional
+        Whether to load training samples (default: False).
+    
+    Attributes
+    ----------
+    best_ckpt : str or None
+        Path to the best checkpoint found, or None if not found.
+    tb_log_path : str
+        Path to TensorBoard logs.
+    conditioning_channels : int
+        Number of conditioning channels (auto-detected from checkpoint).
+    large_scale_channels : int
+        Number of large-scale conditioning channels.
+    """
     
     def __init__(self, config_path='config.ini', verbose=False, train_samples=False):
         self.config_path = config_path
-        self.verbose = verbose
+        # Convert verbose to verbosity context
+        self._verbosity = VerbosityContext(verbose)
+        self.verbose = verbose  # Keep for backward compatibility
         self.train_samples = train_samples
         self._load_config()
         self._state_initialization()
@@ -100,12 +138,16 @@ class ConfigLoader:
                       'cross_attention_heads', 'cross_attention_chunk_size', 'cross_attn_cond_downsample_factor',
                       # DDPM/score_models parameters
                       'n_params', 'nf', 'num_res_blocks', 'n_sampling_steps', 'accumulate_grad_batches',
-                      'ema_update_after_step', 'ema_update_every'}
+                      'ema_update_after_step', 'ema_update_every',
+                      # DiT parameters
+                      'patch_size', 'hidden_size', 'depth', 'num_heads', 'warmup_steps', 'max_epochs'}
         float_params = {'gamma_min', 'gamma_max', 'learning_rate', 'mass_conservation_weight',
                         'sparsity_threshold', 'sparse_loss_weight', 'focal_alpha', 'focal_gamma',
                         'param_prediction_weight', 'cross_attention_dropout',
                         # DDPM/score_models parameters
-                        'beta_min', 'beta_max', 'sigma_min', 'sigma_max', 'ema_decay', 'dropout'}
+                        'beta_min', 'beta_max', 'sigma_min', 'sigma_max', 'ema_decay', 'dropout',
+                        # DiT parameters
+                        'mlp_ratio', 'weight_decay', 'gradient_clip_val'}
         bool_params = {'use_large_scale', 'use_fourier_features', 'fourier_legacy', 'legacy_fourier',
                        'add_attention', 'use_progressive_field_weighting', 'use_mass_conservation',
                        'use_sparsity_aware_loss', 'use_focal_loss', 'use_param_prediction', 
@@ -113,7 +155,9 @@ class ConfigLoader:
                        'use_chunked_cross_attention', 'downsample_cross_attn_cond',
                        # DDPM/score_models parameters
                        'use_param_conditioning', 'attention', 'enable_ema', 'enable_early_stopping',
-                       'enable_gradient_monitoring'}
+                       'enable_gradient_monitoring',
+                       # DiT parameters
+                       'use_quantile_normalization', 'use_ema'}
         
         # Assign attributes with correct types
         for key, value in params.items():
@@ -129,8 +173,7 @@ class ConfigLoader:
         # Handle backward compatibility: legacy_fourier -> fourier_legacy
         if hasattr(self, 'legacy_fourier') and not hasattr(self, 'fourier_legacy'):
             self.fourier_legacy = self.legacy_fourier
-            if self.verbose:
-                print(f"[ConfigLoader] Converted legacy_fourier={self.legacy_fourier} to fourier_legacy")
+            self._verbosity.vprint_debug(f"[ConfigLoader] Converted legacy_fourier={self.legacy_fourier} to fourier_legacy")
         
         # UPDATED: Handle data_noise specially (can be single float or tuple)
         if 'data_noise' in params:
@@ -186,12 +229,10 @@ class ConfigLoader:
         if not hasattr(self, 'conditioning_channels') or self.conditioning_channels is None:
             # Try to auto-detect from checkpoint if available
             self.conditioning_channels = 1  # Default to 1 (base DM channel)
-            if self.verbose:
-                print(f"[ConfigLoader] conditioning_channels not in config or None, using default: {self.conditioning_channels}")
+            self._verbosity.vprint_debug(f"[ConfigLoader] conditioning_channels not in config or None, using default: {self.conditioning_channels}")
         else:
-            if self.verbose:
-                print(f"[ConfigLoader] Found conditioning_channels in config: {self.conditioning_channels}")
-                print(f"[ConfigLoader] WARNING: This will be overridden by checkpoint auto-detection!")
+            self._verbosity.vprint_debug(f"[ConfigLoader] Found conditioning_channels in config: {self.conditioning_channels}")
+            self._verbosity.vprint_debug(f"[ConfigLoader] WARNING: This will be overridden by checkpoint auto-detection!")
         
         if not hasattr(self, 'large_scale_channels'):
             # Default to 0 (no large-scale conditioning)
@@ -225,15 +266,14 @@ class ConfigLoader:
             quantile_val = params['quantile_path'].strip()
             if quantile_val.lower() not in ['none', '']:
                 self.quantile_path = quantile_val
-                if self.verbose:
-                    print(f"[ConfigLoader] 🌟 Quantile normalization enabled: {self.quantile_path}")
+                self._verbosity.vprint_debug(f"[ConfigLoader] 🌟 Quantile normalization enabled: {self.quantile_path}")
             else:
                 self.quantile_path = None
         else:
             self.quantile_path = None
 
-        if getattr(self, 'verbose', False):
-            print(f"[ConfigLoader] Loaded config from: {self.config_path}")
+        self._verbosity.vprint_debug(f"[ConfigLoader] Loaded config from: {self.config_path}")
+        if self._verbosity.is_debug():
             print(f"[ConfigLoader] Parameters:")
             for key in params:
                 print(f"  {key}: {getattr(self, key, None)}")
@@ -293,12 +333,11 @@ class ConfigLoader:
         else:
             self.best_ckpt = None
 
-        if getattr(self, 'verbose', False):
-            print(f"[ConfigLoader] TensorBoard log path: {self.tb_log_path}")
-            if self.best_ckpt:
-                print(f"[ConfigLoader] Found best checkpoint: {self.best_ckpt}")
-            else:
-                print("[ConfigLoader] No checkpoint found.")
+        self._verbosity.vprint_debug(f"[ConfigLoader] TensorBoard log path: {self.tb_log_path}")
+        if self.best_ckpt:
+            self._verbosity.vprint_summary(f"[ConfigLoader] Found checkpoint: {self.best_ckpt}")
+        else:
+            self._verbosity.vprint_summary("[ConfigLoader] No checkpoint found.")
 
     @staticmethod
     def _natural_sort_key(s):
@@ -310,9 +349,10 @@ class ConfigLoader:
 
 class ModelManager:
     """
-    Model manager supporting multiple model types:
+    Model manager supporting multiple model types.
     
-    Model Types:
+    Supported Model Types
+    ---------------------
     - clean: Single 3-channel model (LightCleanVDM)
     - triple: Three independent 1-channel models (LightTripleVDM)
     - ddpm: Score-based diffusion model (score_models package)
@@ -320,10 +360,17 @@ class ModelManager:
     - interpolant: Flow matching / stochastic interpolant (LightInterpolant)
     - consistency: Consistency models (Song et al., 2023) - single/few-step sampling
     - ot_flow: Optimal Transport Flow Matching (Lipman et al., 2022)
+    - dit: Diffusion Transformer (Peebles & Xie, 2023) - LightDiTVDM
     
     The model type is auto-detected from:
     1. config.model_name containing keywords
     2. Checkpoint state_dict structure
+    
+    Examples
+    --------
+    >>> config = ConfigLoader('configs/interpolant.ini')
+    >>> _, model = ModelManager.initialize(config, verbose='summary')
+    >>> model = model.to('cuda').eval()
     """
     
     @staticmethod
@@ -331,21 +378,43 @@ class ModelManager:
         """
         Detect model type from config and/or checkpoint.
         
+        Parameters
+        ----------
+        config : ConfigLoader
+            Configuration object with model_name and best_ckpt.
+        verbose : bool or int or str, optional
+            Verbosity level. If bool, True=DEBUG, False=SILENT.
+        
+        Returns
+        -------
+        str
+            Model type: 'clean', 'triple', 'ddpm', 'dsm', 'interpolant', 
+            'consistency', 'ot_flow', or 'dit'
+        
+        Notes
+        -----
         Detection order:
-        1. Check config.model_name for 'consistency'
-        2. Check config.model_name for 'ot_flow' or 'ot-flow' or 'optimal_transport'
-        3. Check config.model_name for 'dsm' (Denoising Score Matching with custom UNet)
-        4. Check config.model_name for 'interpolant' or 'flow'
-        5. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
-        6. Check config.model_name for 'triple'
-        7. Check checkpoint state_dict for model type keys
-        8. Default to 'clean'
+        1. Check config.model_name for 'dit' or 'transformer'
+        2. Check config.model_name for 'consistency'
+        3. Check config.model_name for 'ot_flow' or 'ot-flow' or 'optimal_transport'
+        4. Check config.model_name for 'dsm' (Denoising Score Matching with custom UNet)
+        5. Check config.model_name for 'interpolant' or 'flow'
+        6. Check config.model_name for 'ddpm' or 'ncsnpp' or 'score'
+        7. Check config.model_name for 'triple'
+        8. Check checkpoint state_dict for model type keys
+        9. Default to 'clean'
         
         Returns:
-            str: 'clean', 'triple', 'ddpm', 'dsm', 'interpolant', 'consistency', or 'ot_flow'
+            str: 'clean', 'triple', 'ddpm', 'dsm', 'interpolant', 'consistency', 'ot_flow', or 'dit'
         """
         # Method 1: Check model_name in config
         model_name = getattr(config, 'model_name', '').lower()
+        
+        # Check for DiT (Diffusion Transformer) first
+        if any(x in model_name for x in ['dit', 'diffusion_transformer', 'transformer']):
+            if verbose:
+                print(f"[ModelManager] Detected 'dit' model from model_name: {model_name}")
+            return 'dit'
         
         # Check for consistency models first (most specific)
         if 'consistency' in model_name:
@@ -388,6 +457,14 @@ class ModelManager:
                 checkpoint = torch.load(config.best_ckpt, map_location='cpu', weights_only=False)
                 state_dict = checkpoint.get('state_dict', {})
                 hparams = checkpoint.get('hyper_parameters', {})
+                
+                # Check for DiT model structure
+                # DiT models have 'score_model.blocks.*' or 'score_model.x_embedder.*' keys
+                dit_keys = [k for k in state_dict.keys() if 'score_model.blocks' in k or 'score_model.x_embedder' in k]
+                if dit_keys or hparams.get('dit_variant') or hparams.get('patch_size'):
+                    if verbose:
+                        print(f"[ModelManager] Detected 'dit' model from checkpoint structure")
+                    return 'dit'
                 
                 # Check for consistency model structure
                 # Consistency models have 'consistency_model.*' or 'target_model.*' keys
@@ -465,7 +542,9 @@ class ModelManager:
         # Detect model type
         model_type = ModelManager.detect_model_type(config, verbose=verbose)
         
-        if model_type == 'consistency':
+        if model_type == 'dit':
+            return ModelManager._initialize_dit(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        elif model_type == 'consistency':
             return ModelManager._initialize_consistency(config, verbose=verbose, skip_data_loading=skip_data_loading)
         elif model_type == 'ot_flow':
             return ModelManager._initialize_ot_flow(config, verbose=verbose, skip_data_loading=skip_data_loading)
@@ -1206,6 +1285,145 @@ class ModelManager:
         if verbose:
             n_params_total = sum(p.numel() for p in model.parameters())
             print(f"[ModelManager] ✓ Interpolant model loaded successfully")
+            print(f"[ModelManager] Model parameters: {n_params_total:,}")
+            print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
+        
+        # Load data if requested
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, model
+
+    @staticmethod
+    def _initialize_dit(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize a DiT (Diffusion Transformer) model.
+        
+        DiT replaces the UNet backbone with a Vision Transformer while maintaining
+        the VDM loss formulation, enabling direct comparison with UNet-based models.
+        
+        Reference: "Scalable Diffusion Models with Transformers" (Peebles & Xie, 2023)
+        """
+        if verbose:
+            print("[ModelManager] Initializing DiT (Diffusion Transformer) model...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Import DiT module
+        from vdm.dit_model import LightDiTVDM
+        from vdm.dit import create_dit_model
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"DiT model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        state_dict = checkpoint.get('state_dict', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in list(hparams.items())[:20]:
+                print(f"  {k}: {v}")
+        
+        # Extract model configuration from hparams
+        dit_variant = hparams.get('dit_model', getattr(config, 'dit_variant', 'DiT-B/4'))
+        learning_rate = hparams.get('learning_rate', getattr(config, 'learning_rate', 1e-4))
+        weight_decay = hparams.get('weight_decay', getattr(config, 'weight_decay', 1e-5))
+        gamma_min = hparams.get('gamma_min', getattr(config, 'gamma_min', -13.3))
+        gamma_max = hparams.get('gamma_max', getattr(config, 'gamma_max', 5.0))
+        n_sampling_steps = hparams.get('n_sampling_steps', getattr(config, 'n_sampling_steps', 256))
+        loss_type = hparams.get('loss_type', getattr(config, 'loss_type', 'mse'))
+        
+        # Conditioning configuration
+        conditioning_channels = hparams.get('conditioning_channels', getattr(config, 'conditioning_channels', 1))
+        large_scale_channels = hparams.get('large_scale_channels', getattr(config, 'large_scale_channels', 3))
+        use_param_conditioning = hparams.get('use_param_conditioning', getattr(config, 'use_param_conditioning', True))
+        n_params = hparams.get('n_params', getattr(config, 'Nparams', 35))
+        
+        # DiT-specific parameters (may be from variant or explicit)
+        patch_size = hparams.get('patch_size', getattr(config, 'patch_size', 4))
+        hidden_size = hparams.get('hidden_size', getattr(config, 'hidden_size', 768))
+        depth = hparams.get('depth', getattr(config, 'depth', 12))
+        num_heads = hparams.get('num_heads', getattr(config, 'num_heads', 12))
+        mlp_ratio = hparams.get('mlp_ratio', getattr(config, 'mlp_ratio', 4.0))
+        dropout = hparams.get('dropout', getattr(config, 'dropout', 0.0))
+        
+        # Auto-detect img_size from checkpoint's pos_embed shape
+        # pos_embed shape is (1, num_patches, hidden_size) where num_patches = (img_size / patch_size)^2
+        if 'score_model.pos_embed' in state_dict:
+            num_patches = state_dict['score_model.pos_embed'].shape[1]
+            detected_img_size = int((num_patches ** 0.5) * patch_size)
+            img_size = detected_img_size
+            if verbose:
+                print(f"[ModelManager] Auto-detected img_size={img_size} from pos_embed (num_patches={num_patches})")
+        else:
+            # Fallback to config cropsize
+            img_size = getattr(config, 'cropsize', 128)
+            if verbose:
+                print(f"[ModelManager] Using img_size={img_size} from config.cropsize")
+        
+        if verbose:
+            print(f"[ModelManager] DiT Model Configuration:")
+            print(f"  Variant: {dit_variant}")
+            print(f"  Image size: {img_size}")
+            print(f"  Patch size: {patch_size}")
+            print(f"  Hidden size: {hidden_size}, Depth: {depth}, Heads: {num_heads}")
+            print(f"  Gamma range: [{gamma_min}, {gamma_max}]")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  Conditioning: {conditioning_channels} + {large_scale_channels} large-scale")
+            print(f"  Param conditioning: {use_param_conditioning} ({n_params} params)")
+        
+        # Create DiT model
+        model = LightDiTVDM(
+            dit_model=dit_variant,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            gamma_min=gamma_min,
+            gamma_max=gamma_max,
+            n_sampling_steps=n_sampling_steps,
+            loss_type=loss_type,
+            image_shape=(3, img_size, img_size),
+            img_size=img_size,
+            patch_size=patch_size,
+            hidden_size=hidden_size,
+            depth=depth,
+            num_heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            n_params=n_params,
+            conditioning_channels=conditioning_channels,
+            large_scale_channels=large_scale_channels,
+            dropout=dropout,
+        )
+        
+        if verbose:
+            print(f"[ModelManager] Loading state dict into LightDiTVDM...")
+        
+        # Load state dict
+        model.load_state_dict(state_dict)
+        model = model.eval().to(device)
+        
+        if verbose:
+            n_params_total = sum(p.numel() for p in model.parameters())
+            print(f"[ModelManager] ✓ DiT model loaded successfully")
             print(f"[ModelManager] Model parameters: {n_params_total:,}")
             print(f"[ModelManager] Sampling steps: {n_sampling_steps}")
         

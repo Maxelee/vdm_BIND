@@ -42,3 +42,6 @@ configparser>=5.0
 
 # Optimal Transport (for OT Flow model)
 # pip install POT
+
+# Documentation (for building docs)
+# pip install sphinx sphinx-rtd-theme myst-parser sphinx-copybutton
