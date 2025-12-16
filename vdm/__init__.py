@@ -59,6 +59,17 @@ from .dsm_model import LightDSM
 from .fno import FNO2d, create_fno_model, FNOForVDM
 from .fno_model import LightFNOVDM, LightFNOFlow
 
+# Import backbone abstraction layer
+from .backbones import (
+    BackboneBase,
+    BackboneRegistry,
+    UNetBackbone,
+    DiTBackbone,
+    FNOBackbone,
+    create_backbone,
+    list_backbones,
+)
+
 __all__ = [
     # Core models
     'UNetVDM',
@@ -74,6 +85,14 @@ __all__ = [
     'FNOForVDM',
     'LightFNOVDM',
     'LightFNOFlow',
+    # Backbone abstraction
+    'BackboneBase',
+    'BackboneRegistry',
+    'UNetBackbone',
+    'DiTBackbone',
+    'FNOBackbone',
+    'create_backbone',
+    'list_backbones',
     # Verbosity control
     'set_verbosity',
     'get_verbosity',

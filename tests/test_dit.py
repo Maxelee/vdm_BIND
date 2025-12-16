@@ -303,16 +303,19 @@ class TestLightDiTVDM:
     def test_noise_schedule(self, model):
         """Test gamma/noise schedule.
         
-        VDM convention: gamma = gamma_min + (gamma_max - gamma_min) * t
-        - t=0 (clean data): gamma = gamma_min (low noise, high SNR)
-        - t=1 (pure noise): gamma = gamma_max (high noise, low SNR)
+        DiT convention: gamma = gamma_max - (gamma_max - gamma_min) * t
+        - t=0 (clean data): gamma = gamma_max (high SNR)
+        - t=1 (pure noise): gamma = gamma_min (low SNR)
+        
+        Note: This is opposite to the VDM paper convention.
         """
         t = torch.tensor([0.0, 0.5, 1.0])
         gamma = model.gamma(t)
         
-        # gamma should increase from gamma_min to gamma_max (VDM convention)
-        assert torch.isclose(gamma[0], torch.tensor(model.gamma_min))
-        assert torch.isclose(gamma[2], torch.tensor(model.gamma_max))
+        # gamma should decrease from gamma_max to gamma_min
+        # t=0 -> gamma_max (clean), t=1 -> gamma_min (noisy)
+        assert torch.isclose(gamma[0], torch.tensor(model.gamma_max))
+        assert torch.isclose(gamma[2], torch.tensor(model.gamma_min))
         assert torch.isclose(gamma[1], torch.tensor((model.gamma_max + model.gamma_min) / 2))
 
 
