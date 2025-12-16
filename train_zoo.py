@@ -5,14 +5,17 @@ This script provides a clean interface for training generative models using the
 Method + Backbone + Data abstraction pattern.
 
 Usage:
-    # Train VDM with UNet backbone
-    python train_zoo.py --method vdm --backbone unet-b --config configs/clean_vdm_aggressive_stellar.ini
+    # Generate config and train
+    python train_zoo.py --method vdm --backbone unet
     
-    # Train Flow Matching with DiT backbone
-    python train_zoo.py --method flow --backbone dit-s --config configs/interpolant.ini
+    # Use existing config
+    python train_zoo.py --config configs/my_config.ini
     
-    # Train Consistency with FNO backbone
-    python train_zoo.py --method consistency --backbone fno-b --config configs/consistency.ini
+    # Generate config only (don't train)
+    python train_zoo.py --method flow --backbone dit-s --generate-config configs/flow_dit.ini
+    
+    # Override parameters
+    python train_zoo.py --method vdm --backbone unet --learning-rate 1e-4 --batch-size 64
 
 Architecture:
     Method (vdm, flow, consistency)  <- Training/sampling paradigm
@@ -44,6 +47,9 @@ from vdm.astro_dataset import get_astro_data
 from vdm.methods import MethodRegistry, list_methods, create_method
 from vdm.backbones import list_backbones
 from vdm.callbacks import CustomEarlyStopping, EMACallback, GradientMonitorCallback
+
+# Import config factory
+from configs.config_factory import ConfigFactory, TrainingConfig
 
 torch.set_float32_matmul_precision("medium")
 
@@ -275,36 +281,83 @@ Methods: {', '.join(METHODS)}
 Backbones: {', '.join(BACKBONES)}
 
 Examples:
-  python train_zoo.py --method vdm --backbone unet-b
-  python train_zoo.py --method flow --backbone dit-s
-  python train_zoo.py --method consistency --backbone fno-b --n_sampling_steps 1
+  # Train with default config factory settings
+  python train_zoo.py --method vdm --backbone unet
+  
+  # Train with custom config file  
+  python train_zoo.py --config configs/my_config.ini
+  
+  # Generate config without training
+  python train_zoo.py --method flow --backbone dit-s --generate-config configs/flow_dit.ini
+  
+  # List available options
+  python train_zoo.py --list
 """
     )
     
-    parser.add_argument('--method', type=str, required=True, choices=METHODS,
+    parser.add_argument('--method', type=str, choices=METHODS,
                         help='Training method (vdm, flow, consistency)')
-    parser.add_argument('--backbone', type=str, required=True, choices=BACKBONES,
+    parser.add_argument('--backbone', type=str, choices=BACKBONES,
                         help='Backbone architecture (unet, dit, fno, or variants)')
     parser.add_argument('--config', type=str, default=None,
-                        help='Path to config file (uses default if not specified)')
+                        help='Path to config file (auto-generates if not specified)')
     parser.add_argument('--cpu_only', action='store_true',
                         help='Force CPU training (for testing)')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
     
+    # Config generation
+    parser.add_argument('--generate-config', type=str, default=None, metavar='PATH',
+                        help='Generate config to PATH and exit (no training)')
+    parser.add_argument('--list', action='store_true',
+                        help='List available methods and backbones')
+    
     # Override arguments
-    parser.add_argument('--learning_rate', type=float, default=None)
-    parser.add_argument('--n_sampling_steps', type=int, default=None)
-    parser.add_argument('--max_epochs', type=int, default=None)
-    parser.add_argument('--batch_size', type=int, default=None)
+    parser.add_argument('--learning-rate', '--lr', type=float, default=None, dest='learning_rate')
+    parser.add_argument('--n-sampling-steps', type=int, default=None, dest='n_sampling_steps')
+    parser.add_argument('--max-epochs', type=int, default=None, dest='max_epochs')
+    parser.add_argument('--batch-size', type=int, default=None, dest='batch_size')
+    parser.add_argument('--model-name', type=str, default=None, dest='model_name',
+                        help='Custom model name for logging')
     
     args = parser.parse_args()
     
-    # Use default config if not specified
-    config_path = args.config or DEFAULT_CONFIGS.get(args.method, 'configs/clean_vdm_aggressive_stellar.ini')
+    # Handle --list
+    if args.list:
+        ConfigFactory.print_options()
+        return
     
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Config file not found: {config_path}")
+    # Handle --generate-config
+    if args.generate_config:
+        if not args.method or not args.backbone:
+            parser.error("--generate-config requires --method and --backbone")
+        
+        config = ConfigFactory.create(
+            method=args.method,
+            backbone=args.backbone,
+            model_name=args.model_name,
+        )
+        config.save(args.generate_config)
+        return
+    
+    # For training, require either config file OR method+backbone
+    if args.config:
+        config_path = args.config
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+    elif args.method and args.backbone:
+        # Auto-generate config using factory
+        print(f"\n📝 Auto-generating config for {args.method} + {args.backbone}...")
+        factory_config = ConfigFactory.create(
+            method=args.method,
+            backbone=args.backbone,
+            model_name=args.model_name,
+        )
+        # Write to temporary config
+        config_path = f"/tmp/zoo_{args.method}_{args.backbone}_config.ini"
+        factory_config.save(config_path)
+    else:
+        parser.error("Either --config or both --method and --backbone are required")
     
     # Load config
     config = configparser.ConfigParser()
@@ -316,13 +369,17 @@ Examples:
     params = config['TRAINING']
     cfg = ConfigParser(params)
     
+    # Get method and backbone from config if not specified
+    method_name = args.method or cfg.get_str('method', 'vdm')
+    backbone_name = args.backbone or cfg.get_str('backbone_type', 'unet')
+    
     # Set seed
     seed = cfg.get_int('seed', 8)
     seed_everything(seed)
     
     # Print header
     print("\n" + "="*80)
-    print(f"GENERATIVE ZOO: {args.method.upper()} + {args.backbone.upper()}")
+    print(f"GENERATIVE ZOO: {method_name.upper()} + {backbone_name.upper()}")
     print("="*80)
     print(f"📁 Configuration: {config_path}")
     print(f"🎲 Seed: {seed}")
@@ -360,11 +417,11 @@ Examples:
     )
     
     # Create method with backbone
-    print(f"\n🔧 Creating {args.method.upper()} method with {args.backbone.upper()} backbone...")
+    print(f"\n🔧 Creating {method_name.upper()} method with {backbone_name.upper()} backbone...")
     
     # Build method-specific parameters
     method_kwargs = {
-        'backbone_type': args.backbone,
+        'backbone_type': backbone_name,
         'img_size': img_size,
         'image_shape': (3, img_size, img_size),
         'conditioning_channels': cfg.get_int('conditioning_channels', 1),
@@ -381,7 +438,7 @@ Examples:
         method_kwargs['param_max'] = list(max_vals)
     
     # Method-specific parameters
-    if args.method == 'vdm':
+    if method_name == 'vdm':
         method_kwargs.update({
             'gamma_min': cfg.get_float('gamma_min', -13.3),
             'gamma_max': cfg.get_float('gamma_max', 5.0),
@@ -389,13 +446,13 @@ Examples:
             'channel_weights': cfg.get_list_float('channel_weights', '1.0,1.0,1.0'),
             'use_focal_loss': cfg.get_bool('use_focal_loss', False),
         })
-    elif args.method == 'flow':
+    elif method_name == 'flow':
         method_kwargs.update({
             'use_stochastic_interpolant': cfg.get_bool('use_stochastic_interpolant', False),
             'sigma': cfg.get_float('sigma', 0.0),
             'x0_mode': cfg.get_str('x0_mode', 'zeros'),
         })
-    elif args.method == 'consistency':
+    elif method_name == 'consistency':
         method_kwargs.update({
             'sigma_min': cfg.get_float('sigma_min', 0.002),
             'sigma_max': cfg.get_float('sigma_max', 80.0),
@@ -403,7 +460,7 @@ Examples:
             'ct_n_steps': cfg.get_int('ct_n_steps', 18),
         })
     
-    method = create_method(args.method, **method_kwargs)
+    method = create_method(method_name, **method_kwargs)
     
     # Print model summary
     total_params = sum(p.numel() for p in method.parameters())
@@ -413,15 +470,18 @@ Examples:
     print(f"  Trainable: {trainable_params:,}")
     
     # Get early stopping metric
-    early_stopping_metric = MethodRegistry.get_early_stopping_metric(args.method)
+    early_stopping_metric = MethodRegistry.get_early_stopping_metric(method_name)
+    
+    # Get model name
+    model_name = args.model_name or cfg.get_str('model_name', f"{method_name}_{backbone_name}")
     
     # Train
     train(
         method=method,
         datamodule=datamodule,
-        model_name=f"{args.method}_{args.backbone}",
-        method_type=args.method,
-        backbone_type=args.backbone,
+        model_name=model_name,
+        method_type=method_name,
+        backbone_type=backbone_name,
         early_stopping_metric=early_stopping_metric,
         max_epochs=args.max_epochs or cfg.get_int('max_epochs', 100),
         tb_logs=cfg.get_str('tb_logs', '/mnt/home/mlee1/ceph/tb_logs/'),
