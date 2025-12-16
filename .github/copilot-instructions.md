@@ -39,9 +39,23 @@ bind_predict.py → bind/bind.py (user-friendly CLI)
 - **Purpose**: Apply trained models to full N-body simulations
 - **Key steps**: Voxelize → Extract halos → Generate → Paste back
 
-### Backbone Abstraction (Generative Zoo)
+### Generative Zoo Architecture
 
-The backbone abstraction layer enables mix-and-match of methods and architectures:
+The project uses a **Method + Backbone + Data** abstraction pattern:
+
+```
+Method (vdm, flow, consistency)  ← Training/sampling paradigm
+    +
+Backbone (unet, dit, fno)        ← Network architecture
+    +
+Dataset (astro_dataset)          ← Data source
+    =
+Experiment
+```
+
+This enables systematic comparison - any method can use any backbone.
+
+#### Backbone Abstraction (`vdm/backbones.py`)
 
 ```python
 from vdm.backbones import create_backbone, list_backbones
@@ -70,17 +84,47 @@ forward(x_t, t, conditioning=None, param_conditioning=None) -> prediction
 | DiT | dit-s, dit-b, dit-l, dit-xl | Vision Transformer with adaLN |
 | FNO | fno-s, fno-b, fno-l, fno-xl | Fourier Neural Operator (spectral conv) |
 
+#### Method Abstraction (`vdm/methods.py`)
+
+```python
+from vdm.methods import create_method, list_methods
+
+# List available methods
+print(list_methods())  # ['vdm', 'flow', 'consistency']
+
+# Create method with backbone
+method = create_method("vdm", backbone_type="dit-b", img_size=128)
+
+# Or with pre-created backbone
+method = create_method("flow", backbone=my_backbone)
+
+# Training
+loss, metrics = method.compute_loss(x, conditioning, params)
+
+# Sampling
+samples = method.sample(conditioning, n_samples=16, n_steps=50)
+```
+
+**Available Methods**:
+| Method | Description | Sampling Steps | Monitor Metric |
+|--------|-------------|----------------|----------------|
+| `vdm` | Variational Diffusion Model | 250 | val/elbo |
+| `flow` | Flow Matching / Stochastic Interpolant | 50 | val/loss |
+| `consistency` | Consistency Models | 1-5 | val/loss |
+
 ## Project Structure
 
 ```
 vdm_BIND/
 ├── config.py                 # Centralized path configuration (env vars)
-├── train_unified.py          # Unified training for ALL model types
+├── train_zoo.py              # Clean Method+Backbone training (NEW)
+├── train_unified.py          # Unified training (backward compatible)
 ├── train_model_clean.py      # Legacy VDM training (kept for reference)
 ├── run_bind_unified.py       # BIND inference on simulation suites
 ├── bind_predict.py           # User-friendly BIND CLI for custom simulations
 ├── vdm/                      # Core model package
-│   ├── backbones.py          # Backbone abstraction (Generative Zoo)
+│   ├── methods.py            # Method abstraction (VDM, Flow, Consistency)
+│   ├── backbones.py          # Backbone abstraction (UNet, DiT, FNO)
 │   ├── networks_clean.py     # UNet architecture
 │   ├── vdm_model_clean.py    # 3-channel LightCleanVDM
 │   ├── vdm_model_triple.py   # 3 independent VDMs
@@ -222,7 +266,9 @@ from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 | File | Purpose |
 |------|---------|
 | `config.py` | Centralized path configuration with environment variable support |
-| `train_unified.py` | **Unified training script for all model types** |
+| `train_zoo.py` | **Generative Zoo training: Method + Backbone pattern** |
+| `train_unified.py` | Unified training (backward compatible, supports all legacy models) |
+| `vdm/methods.py` | **Method abstraction: `create_method()`, VDM/Flow/Consistency** |
 | `vdm/backbones.py` | Backbone abstraction: `create_backbone()`, UNet/DiT/FNO wrappers |
 | `vdm/networks_clean.py` | UNet architecture with Fourier features, attention, cross-attention |
 | `vdm/vdm_model_clean.py` | 3-channel VDM with focal loss, per-channel weighting |
@@ -251,11 +297,14 @@ from config import PROJECT_ROOT, DATA_DIR, NORMALIZATION_STATS_DIR
 
 ### Running Tests
 ```bash
-# Run all tests (142 tests)
+# Run all tests
 python -m pytest tests/ -v
 
-# Run specific test file
-python -m pytest tests/test_vdm.py -v
+# Run method abstraction tests
+python -m pytest tests/test_methods.py -v
+
+# Run backbone tests
+python -m pytest tests/test_backbones.py -v
 
 # Run with coverage
 python -m pytest tests/ --cov=vdm --cov=bind
@@ -335,12 +384,23 @@ Training scripts save checkpoints in two formats (both backward compatible):
 
 ## Training Quick Reference
 
-### Run Training for Any Model
+### Generative Zoo Training (Recommended)
 ```bash
 # Activate environment
 source /mnt/home/mlee1/venvs/torch3/bin/activate
 
-# Train a specific model (interactive)
+# Train with Method + Backbone selection
+python train_zoo.py --method vdm --backbone unet-b
+python train_zoo.py --method flow --backbone dit-s
+python train_zoo.py --method consistency --backbone fno-b --n_sampling_steps 1
+
+# Methods: vdm, flow, consistency
+# Backbones: unet[-s/b/l], dit[-s/b/l/xl], fno[-s/b/l/xl]
+```
+
+### Legacy Training (Backward Compatible)
+```bash
+# Train a specific model type
 python train_unified.py --model MODEL_TYPE --config configs/CONFIG.ini
 
 # MODEL_TYPE options: vdm, triple, ddpm, dsm, interpolant, ot_flow, consistency, dit

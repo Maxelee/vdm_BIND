@@ -567,6 +567,9 @@ class FNOBackbone(BackboneBase):
         # FNO computes total_input = in_channels + conditioning_channels + large_scale_channels
         # internally, so we pass in_channels as target only
         
+        # Auto-adjust modes for small images (modes must be <= img_size // 2)
+        actual_modes = min(modes, img_size // 2)
+        
         self.net = FNO2d(
             in_channels=input_channels,  # Target channels only
             out_channels=output_channels,
@@ -574,8 +577,8 @@ class FNOBackbone(BackboneBase):
             large_scale_channels=large_scale_channels,
             hidden_channels=hidden_channels,
             n_layers=n_layers,
-            modes1=modes,
-            modes2=modes,
+            modes1=actual_modes,
+            modes2=actual_modes,
             n_params=param_dim,
             param_min=param_min,
             param_max=param_max,

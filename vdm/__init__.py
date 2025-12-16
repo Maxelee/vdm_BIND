@@ -70,6 +70,17 @@ from .backbones import (
     list_backbones,
 )
 
+# Import method abstraction layer
+from .methods import (
+    BaseMethod,
+    MethodRegistry,
+    VDMMethod,
+    FlowMatchingMethod,
+    ConsistencyMethod,
+    create_method,
+    list_methods,
+)
+
 __all__ = [
     # Core models
     'UNetVDM',
@@ -93,6 +104,14 @@ __all__ = [
     'FNOBackbone',
     'create_backbone',
     'list_backbones',
+    # Method abstraction
+    'BaseMethod',
+    'MethodRegistry',
+    'VDMMethod',
+    'FlowMatchingMethod',
+    'ConsistencyMethod',
+    'create_method',
+    'list_methods',
     # Verbosity control
     'set_verbosity',
     'get_verbosity',
