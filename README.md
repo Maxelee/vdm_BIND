@@ -6,6 +6,16 @@ A unified framework for training variational diffusion models on cosmological si
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![License: BSD-2](https://img.shields.io/badge/License-BSD%202--Clause-orange.svg)](https://opensource.org/licenses/BSD-2-Clause)
 
+## 📚 Documentation
+
+**[Full Documentation](docs/index.md)** — Comprehensive guides, API reference, and tutorials.
+
+Quick links:
+- [Quick Start Guide](docs/quickstart.md) — Get started in 5 minutes
+- [Model Guide](docs/models/index.md) — Detailed documentation for all 8 model architectures
+- [API Reference](docs/api/index.md) — Complete API documentation for `vdm` and `bind` packages
+- [Uncertainty & Ensembles](docs/concepts/index.md) — Uncertainty quantification and model ensembles
+
 ## Overview
 
 VDM-BIND provides a complete pipeline for:
@@ -110,10 +120,14 @@ The tutorial covers:
 ### Minimal Example
 
 ```python
+import vdm
 from vdm.vdm_model_clean import LightCleanVDM
 from vdm.networks_clean import UNetVDM
 from vdm.astro_dataset import get_astro_data
 import torch
+
+# Control output verbosity (optional)
+vdm.set_verbosity('silent')  # or 'summary', 'debug'
 
 # 1. Load data
 train_loader, val_loader = get_astro_data(batch_size=32, num_workers=4)
