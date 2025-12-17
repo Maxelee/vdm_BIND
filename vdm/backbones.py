@@ -319,6 +319,11 @@ class UNetBackbone(BackboneBase):
         # Determine if we need param conditioning
         use_param_conditioning = param_dim > 0
         
+        # Auto-generate param_min/param_max if not provided but param_dim > 0
+        if use_param_conditioning and (param_min is None or param_max is None):
+            param_min = [0.0] * param_dim
+            param_max = [1.0] * param_dim
+        
         # Build UNetVDM with appropriate settings
         self.net = UNetVDM(
             input_channels=input_channels,

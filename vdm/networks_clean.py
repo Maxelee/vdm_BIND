@@ -1232,7 +1232,8 @@ class UNetVDM(nn.Module):
             
         elif self.use_param_conditioning:
             # Pad with zeros if parameters not provided
-            param_embed_dim = self.param_conditioning_embedding.embedding[-1].out_features
+            # Use embed_dim from ParamEmbedding (works even in unconditional mode)
+            param_embed_dim = self.param_conditioning_embedding.embed_dim
             zero_param = torch.zeros(
                 t_cond.shape[0], param_embed_dim,
                 device=t_cond.device, dtype=t_cond.dtype
