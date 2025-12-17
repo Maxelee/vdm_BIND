@@ -41,12 +41,27 @@ from abc import ABC, abstractmethod
 from typing import Dict, Optional, Any, Type, Callable, Tuple, Union, List
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 import numpy as np
 
 from lightning.pytorch import LightningModule
 
 from vdm.backbones import BackboneBase, BackboneRegistry, create_backbone
+
+# =============================================================================
+# Global verbosity setting
+# =============================================================================
+_VERBOSE = True
+
+def set_verbose(verbose: bool):
+    """Set global verbosity for method/backbone initialization."""
+    global _VERBOSE
+    _VERBOSE = verbose
+
+def get_verbose() -> bool:
+    """Get current verbosity setting."""
+    return _VERBOSE
 
 
 # =============================================================================
@@ -628,16 +643,17 @@ class VDMMethod(BaseMethod):
             raise ValueError(f"Unknown noise schedule: {noise_schedule}")
         
         # Print config
-        print(f"\n{'='*60}")
-        print(f"VDM METHOD INITIALIZED")
-        print(f"{'='*60}")
-        print(f"  Backbone: {type(backbone).__name__}")
-        print(f"  Gamma range: [{gamma_min}, {gamma_max}]")
-        print(f"  Noise schedule: {noise_schedule}")
-        print(f"  Sampling steps: {n_sampling_steps}")
-        print(f"  Channel weights: {channel_weights}")
-        print(f"  Focal loss: {use_focal_loss}")
-        print(f"{'='*60}\n")
+        if get_verbose():
+            print(f"\n{'='*60}")
+            print(f"VDM METHOD INITIALIZED")
+            print(f"{'='*60}")
+            print(f"  Backbone: {type(backbone).__name__}")
+            print(f"  Gamma range: [{gamma_min}, {gamma_max}]")
+            print(f"  Noise schedule: {noise_schedule}")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  Channel weights: {channel_weights}")
+            print(f"  Focal loss: {use_focal_loss}")
+            print(f"{'='*60}\n")
     
     def alpha(self, gamma: Tensor) -> Tensor:
         """Signal coefficient: sqrt(sigmoid(-gamma))"""
@@ -919,14 +935,15 @@ class FlowMatchingMethod(BaseMethod):
         self.sigma = sigma
         self.x0_mode = x0_mode
         
-        print(f"\n{'='*60}")
-        print(f"FLOW MATCHING METHOD INITIALIZED")
-        print(f"{'='*60}")
-        print(f"  Backbone: {type(backbone).__name__}")
-        print(f"  Sampling steps: {n_sampling_steps}")
-        print(f"  Stochastic: {use_stochastic_interpolant} (sigma={sigma})")
-        print(f"  x0 mode: {x0_mode}")
-        print(f"{'='*60}\n")
+        if get_verbose():
+            print(f"\n{'='*60}")
+            print(f"FLOW MATCHING METHOD INITIALIZED")
+            print(f"{'='*60}")
+            print(f"  Backbone: {type(backbone).__name__}")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  Stochastic: {use_stochastic_interpolant} (sigma={sigma})")
+            print(f"  x0 mode: {x0_mode}")
+            print(f"{'='*60}\n")
     
     def _get_x0(self, x1: Tensor, dm_condition: Optional[Tensor] = None) -> Tensor:
         """Initialize source distribution."""
@@ -1126,14 +1143,15 @@ class ConsistencyMethod(BaseMethod):
         # Track training phase
         self._in_denoising_phase = use_denoising_pretraining
         
-        print(f"\n{'='*60}")
-        print(f"CONSISTENCY METHOD INITIALIZED")
-        print(f"{'='*60}")
-        print(f"  Backbone: {type(backbone).__name__}")
-        print(f"  Sigma range: [{sigma_min}, {sigma_max}]")
-        print(f"  Sampling steps: {n_sampling_steps}")
-        print(f"  Denoising pretraining: {use_denoising_pretraining}")
-        print(f"{'='*60}\n")
+        if get_verbose():
+            print(f"\n{'='*60}")
+            print(f"CONSISTENCY METHOD INITIALIZED")
+            print(f"{'='*60}")
+            print(f"  Backbone: {type(backbone).__name__}")
+            print(f"  Sigma range: [{sigma_min}, {sigma_max}]")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  Denoising pretraining: {use_denoising_pretraining}")
+            print(f"{'='*60}\n")
     
     def get_sigma(self, t: Tensor) -> Tensor:
         """Get noise level from time t ∈ [0, 1]."""
@@ -1396,15 +1414,16 @@ class DSMMethod(BaseMethod):
         
         self.save_hyperparameters(ignore=['backbone'])
         
-        print(f"\n{'='*60}")
-        print("DSM METHOD INITIALIZED")
-        print("="*60)
-        print(f"  Backbone: {backbone.__class__.__name__}")
-        print(f"  Beta range: [{beta_min}, {beta_max}]")
-        print(f"  SNR weighting: {use_snr_weighting}")
-        print(f"  Sampling steps: {n_sampling_steps}")
-        print(f"  Channel weights: {channel_weights}")
-        print("="*60 + "\n")
+        if get_verbose():
+            print(f"\n{'='*60}")
+            print("DSM METHOD INITIALIZED")
+            print("="*60)
+            print(f"  Backbone: {backbone.__class__.__name__}")
+            print(f"  Beta range: [{beta_min}, {beta_max}]")
+            print(f"  SNR weighting: {use_snr_weighting}")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  Channel weights: {channel_weights}")
+            print("="*60 + "\n")
     
     def alpha(self, t: Tensor) -> Tensor:
         """Compute alpha(t) for VP-SDE."""
@@ -1461,29 +1480,31 @@ class DSMMethod(BaseMethod):
         
         loss = mse_weighted.mean()
         
-        return {
-            'loss': loss,
-            'mse': mse.mean(),
+        metrics = {
+            'loss': loss.item(),
+            'mse': mse.mean().item(),
         }
+        return loss, metrics
     
     def training_step(self, batch, batch_idx):
         """Training step."""
         x, conditioning, params = self._unpack_batch(batch)
-        loss_dict = self.compute_loss(x, conditioning, params)
+        loss, metrics = self.compute_loss(x, conditioning, params)
         
-        self.log("train/loss", loss_dict['loss'], prog_bar=True, sync_dist=True)
-        self.log("train/mse", loss_dict['mse'], sync_dist=True)
+        for key, value in metrics.items():
+            self.log(f"train/{key}", value, prog_bar=(key == "loss"), sync_dist=True)
         
-        return loss_dict['loss']
+        return loss
     
     def validation_step(self, batch, batch_idx):
         """Validation step."""
         x, conditioning, params = self._unpack_batch(batch)
-        loss_dict = self.compute_loss(x, conditioning, params)
+        loss, metrics = self.compute_loss(x, conditioning, params)
         
-        self.log("val/loss", loss_dict['loss'], prog_bar=True, sync_dist=True)
+        for key, value in metrics.items():
+            self.log(f"val/{key}", value, prog_bar=(key == "loss"), sync_dist=True)
         
-        return loss_dict['loss']
+        return loss
     
     @torch.no_grad()
     def sample(
@@ -1621,20 +1642,22 @@ class OTFlowMethod(BaseMethod):
             self._has_pot = True
         except ImportError:
             self._has_pot = False
-            print("Warning: POT library not installed. Using random coupling instead.")
-            print("Install with: pip install POT")
+            if get_verbose():
+                print("Warning: POT library not installed. Using random coupling instead.")
+                print("Install with: pip install POT")
         
         self.save_hyperparameters(ignore=['backbone'])
         
-        print(f"\n{'='*60}")
-        print("OT FLOW METHOD INITIALIZED")
-        print("="*60)
-        print(f"  Backbone: {backbone.__class__.__name__}")
-        print(f"  OT method: {ot_method}")
-        print(f"  x0 mode: {x0_mode}")
-        print(f"  Sampling steps: {n_sampling_steps}")
-        print(f"  POT available: {self._has_pot}")
-        print("="*60 + "\n")
+        if get_verbose():
+            print(f"\n{'='*60}")
+            print("OT FLOW METHOD INITIALIZED")
+            print("="*60)
+            print(f"  Backbone: {backbone.__class__.__name__}")
+            print(f"  OT method: {ot_method}")
+            print(f"  x0 mode: {x0_mode}")
+            print(f"  Sampling steps: {n_sampling_steps}")
+            print(f"  POT available: {self._has_pot}")
+            print("="*60 + "\n")
     
     def compute_ot_plan(self, x0: Tensor, x1: Tensor) -> Tensor:
         """Compute optimal transport coupling."""
@@ -1716,28 +1739,31 @@ class OTFlowMethod(BaseMethod):
         # MSE loss
         loss = F.mse_loss(v_pred, v_true)
         
-        return {
-            'loss': loss,
-            'mse': loss,
+        metrics = {
+            'loss': loss.item(),
+            'mse': loss.item(),
         }
+        return loss, metrics
     
     def training_step(self, batch, batch_idx):
         """Training step."""
         x, conditioning, params = self._unpack_batch(batch)
-        loss_dict = self.compute_loss(x, conditioning, params)
+        loss, metrics = self.compute_loss(x, conditioning, params)
         
-        self.log("train/loss", loss_dict['loss'], prog_bar=True, sync_dist=True)
+        for key, value in metrics.items():
+            self.log(f"train/{key}", value, prog_bar=(key == "loss"), sync_dist=True)
         
-        return loss_dict['loss']
+        return loss
     
     def validation_step(self, batch, batch_idx):
         """Validation step."""
         x, conditioning, params = self._unpack_batch(batch)
-        loss_dict = self.compute_loss(x, conditioning, params)
+        loss, metrics = self.compute_loss(x, conditioning, params)
         
-        self.log("val/loss", loss_dict['loss'], prog_bar=True, sync_dist=True)
+        for key, value in metrics.items():
+            self.log(f"val/{key}", value, prog_bar=(key == "loss"), sync_dist=True)
         
-        return loss_dict['loss']
+        return loss
     
     @torch.no_grad()
     def sample(

@@ -3,6 +3,18 @@ import torch
 from torch import einsum, nn, pi, softmax
 from vdm.utils import zero_init
 
+# Verbosity control for network initialization messages
+_VERBOSE = True
+
+def set_verbose(verbose: bool) -> None:
+    """Set verbosity for network initialization messages."""
+    global _VERBOSE
+    _VERBOSE = verbose
+
+def get_verbose() -> bool:
+    """Get current verbosity setting."""
+    return _VERBOSE
+
 def get_timestep_embedding(
     timesteps,
     embedding_dim: int,
@@ -688,7 +700,8 @@ class ParamEmbedding(nn.Module):
             self.min = None
             self.max = None
             self.embedding = None
-            print(f"⚙️  ParamEmbedding: Unconditional mode (n_params=0)")
+            if get_verbose():
+                print(f"⚙️  ParamEmbedding: Unconditional mode (n_params=0)")
         else:
             self.min = torch.tensor(param_min, dtype=torch.float32)
             self.max = torch.tensor(param_max, dtype=torch.float32)
@@ -710,7 +723,8 @@ class ParamEmbedding(nn.Module):
                 nn.Linear(embed_dim * 2, embed_dim),  # Project to final dim
                 nn.LayerNorm(embed_dim),
             )
-            print(f"⚙️  ParamEmbedding: Conditional mode (n_params={self.Nparams})")
+            if get_verbose():
+                print(f"⚙️  ParamEmbedding: Conditional mode (n_params={self.Nparams})")
     
     def forward(self, conditional_params):
         """
@@ -812,7 +826,8 @@ class UNetVDM(nn.Module):
         if use_cross_attention:
             # Cross-attention: only process target, conditioning is separate
             base_input_ch = input_channels
-            print(f"✓ Cross-attention mode: Input channels = {input_channels} (target only)")
+            if get_verbose():
+                print(f"✓ Cross-attention mode: Input channels = {input_channels} (target only)")
         else:
             # Original mode: concatenate everything
             # conditioning_channels = m_dm channels = 1
@@ -840,11 +855,12 @@ class UNetVDM(nn.Module):
                 # Legacy: Apply to all concatenated inputs (returns features from first channel only)
                 total_input_ch = base_input_ch + self.fourier_features.num_features
                 
-                print(f"✓ Legacy Fourier features enabled (backward compatibility):")
-                print(f"  - Exponential frequencies: 2^(-2:1) * 2π")
-                print(f"  - Applied to first channel of concatenated input")
-                print(f"  - {self.fourier_features.num_features} Fourier features")
-                print(f"  - Total input channels: {total_input_ch}")
+                if get_verbose():
+                    print(f"✓ Legacy Fourier features enabled (backward compatibility):")
+                    print(f"  - Exponential frequencies: 2^(-2:1) * 2π")
+                    print(f"  - Applied to first channel of concatenated input")
+                    print(f"  - {self.fourier_features.num_features} Fourier features")
+                    print(f"  - Total input channels: {total_input_ch}")
             else:
                 # New mode: scale-appropriate frequency bands for different inputs
                 # High frequencies for halo (m_dm) - captures small-scale structure
@@ -869,11 +885,12 @@ class UNetVDM(nn.Module):
                         large_scale_channels * (1 + self.fourier_features_largescale.num_features)  # large_scale with low-freq Fourier
                     )
                 
-                print(f"✓ Scale-appropriate Fourier features enabled:")
-                print(f"  - Halo (m_dm): High frequencies [1, 2, 4, 8]π -> {self.fourier_features_halo.num_features} features per channel")
-                print(f"  - Large-scale: Low frequencies [0.25, 0.5, 1, 2]π -> {self.fourier_features_largescale.num_features} features per channel")
-                print(f"  - Target: No Fourier features (learns naturally)")
-                print(f"  - Total input channels: {total_input_ch}")
+                if get_verbose():
+                    print(f"✓ Scale-appropriate Fourier features enabled:")
+                    print(f"  - Halo (m_dm): High frequencies [1, 2, 4, 8]π -> {self.fourier_features_halo.num_features} features per channel")
+                    print(f"  - Large-scale: Low frequencies [0.25, 0.5, 1, 2]π -> {self.fourier_features_largescale.num_features} features per channel")
+                    print(f"  - Target: No Fourier features (learns naturally)")
+                    print(f"  - Total input channels: {total_input_ch}")
         else:
             self.fourier_features = None
             self.fourier_features_halo = None
@@ -896,15 +913,17 @@ class UNetVDM(nn.Module):
             self.time_scale = nn.Parameter(torch.ones(1))
             self.param_scale = nn.Parameter(torch.ones(1) * 1.0)  # Initialize higher
             
-            print(f"✓ Parameter conditioning enabled:")
-            print(f"  - Time embedding dim: {4 * embedding_dim}")
-            print(f"  - Param embedding dim: {param_embed_dim}")
-            print(f"  - Total condition dim: {condition_dim}")
+            if get_verbose():
+                print(f"✓ Parameter conditioning enabled:")
+                print(f"  - Time embedding dim: {4 * embedding_dim}")
+                print(f"  - Param embedding dim: {param_embed_dim}")
+                print(f"  - Total condition dim: {condition_dim}")
         else:
             self.param_conditioning_embedding = None
             self.time_scale = None
             self.param_scale = None
-            print("Warning: Parameter conditioning is disabled.")
+            if get_verbose():
+                print("Warning: Parameter conditioning is disabled.")
         total_condition_dim = condition_dim
 
         resnet_params = dict(
@@ -962,7 +981,8 @@ class UNetVDM(nn.Module):
         max_channels = 1024  # Cap to prevent memory explosion
         channels = [min(embedding_dim * (2 ** i), max_channels) for i in range(n_blocks)]
         
-        print(f"✓ Channel progression (encoder): {channels}")
+        if get_verbose():
+            print(f"✓ Channel progression (encoder): {channels}")
         
         for i in range(n_blocks):
             ch_in = embedding_dim if i == 0 else channels[i-1]  # First block: 48, others: previous output
@@ -1005,10 +1025,11 @@ class UNetVDM(nn.Module):
         # Print encoder cross-attention summary
         if use_encoder_cross_attn:
             encoder_cross_attn_count = sum(1 for block in self.down_blocks if isinstance(block, DownBlockWithCrossAttention))
-            print(f"✓ Encoder cross-attention enabled ('everywhere' mode):")
-            print(f"  - {encoder_cross_attn_count}/{len(self.down_blocks)} encoder blocks have cross-attention")
-            print(f"  - Max resolution: {self.cross_attn_max_resolution}")
-            print(f"  - Heads: {cross_attention_heads}, Conditioning channels: {spatial_cond_channels}")
+            if get_verbose():
+                print(f"✓ Encoder cross-attention enabled ('everywhere' mode):")
+                print(f"  - {encoder_cross_attn_count}/{len(self.down_blocks)} encoder blocks have cross-attention")
+                print(f"  - Max resolution: {self.cross_attn_max_resolution}")
+                print(f"  - Heads: {cross_attention_heads}, Conditioning channels: {spatial_cond_channels}")
 
         # Middle block
         mid_ch_in = self.down_channels[-1]  # 384
@@ -1037,12 +1058,13 @@ class UNetVDM(nn.Module):
                 downsample_cond=self.downsample_cross_attn_cond,
                 cond_downsample_factor=self.cross_attn_cond_downsample_factor
             )
-            print(f"✓ Cross-attention enabled at bottleneck:")
-            print(f"  - Heads: {cross_attention_heads}")
-            print(f"  - Feature channels: {mid_ch_out}")
-            print(f"  - Conditioning channels: {spatial_cond_channels}")
-            print(f"  - Chunked: {use_chunked_cross_attention} (chunk_size={cross_attention_chunk_size})")
-            print(f"  - Downsample conditioning: {self.downsample_cross_attn_cond} ({self.cross_attn_cond_downsample_factor}x)")
+            if get_verbose():
+                print(f"✓ Cross-attention enabled at bottleneck:")
+                print(f"  - Heads: {cross_attention_heads}")
+                print(f"  - Feature channels: {mid_ch_out}")
+                print(f"  - Conditioning channels: {spatial_cond_channels}")
+                print(f"  - Chunked: {use_chunked_cross_attention} (chunk_size={cross_attention_chunk_size})")
+                print(f"  - Downsample conditioning: {self.downsample_cross_attn_cond} ({self.cross_attn_cond_downsample_factor}x)")
         else:
             self.mid_cross_attn_block = None
 
@@ -1102,13 +1124,14 @@ class UNetVDM(nn.Module):
         if use_decoder_cross_attn:
             n_decoder_xattn = sum(1 for block in self.up_blocks 
                                   if hasattr(block, 'cross_attn_block') and block.cross_attn_block is not None)
-            print(f"✓ Cross-attention enabled in decoder blocks:")
-            print(f"  - Location: {self.cross_attention_location}")
-            print(f"  - Heads: {cross_attention_heads}")
-            print(f"  - Dropout: {self.cross_attention_dropout}")
-            print(f"  - Active in {n_decoder_xattn}/{n_blocks} decoder blocks (resolution ≤{self.cross_attn_max_resolution})")
-            print(f"  - Chunked: {use_chunked_cross_attention} (chunk_size={cross_attention_chunk_size})")
-            print(f"  - Downsample conditioning: {self.downsample_cross_attn_cond} ({self.cross_attn_cond_downsample_factor}x)")
+            if get_verbose():
+                print(f"✓ Cross-attention enabled in decoder blocks:")
+                print(f"  - Location: {self.cross_attention_location}")
+                print(f"  - Heads: {cross_attention_heads}")
+                print(f"  - Dropout: {self.cross_attention_dropout}")
+                print(f"  - Active in {n_decoder_xattn}/{n_blocks} decoder blocks (resolution ≤{self.cross_attn_max_resolution})")
+                print(f"  - Chunked: {use_chunked_cross_attention} (chunk_size={cross_attention_chunk_size})")
+                print(f"  - Downsample conditioning: {self.downsample_cross_attn_cond} ({self.cross_attn_cond_downsample_factor}x)")
         
         # Store final decoder channel count for conv_out
         # NOTE: current_ch after all up blocks may NOT equal embedding_dim due to channel capping
@@ -1127,7 +1150,8 @@ class UNetVDM(nn.Module):
             zero_init(nn.Conv2d(final_decoder_ch, input_channels, 3, padding=1, padding_mode="zeros")),
         )
         
-        print(f"✓ Final decoder channels: {final_decoder_ch} (GroupNorm groups: {final_norm_groups})")
+        if get_verbose():
+            print(f"✓ Final decoder channels: {final_decoder_ch} (GroupNorm groups: {final_norm_groups})")
         
         # Parameter predictor for auxiliary loss (predicts params from bottleneck features)
         if use_param_conditioning and use_param_prediction:
@@ -1144,7 +1168,8 @@ class UNetVDM(nn.Module):
                 nn.Dropout(0.1),
                 nn.Linear(128, self.param_conditioning_embedding.Nparams)
             )
-            print(f"✓ Parameter predictor added (predicts {self.param_conditioning_embedding.Nparams} params)")
+            if get_verbose():
+                print(f"✓ Parameter predictor added (predicts {self.param_conditioning_embedding.Nparams} params)")
         else:
             self.param_predictor = None
         # NEW: Auxiliary mask prediction head
@@ -1162,7 +1187,8 @@ class UNetVDM(nn.Module):
             # Initialize final layer with small weights
             nn.init.normal_(self.mask_head[-1].weight, mean=0.0, std=0.01)
             nn.init.zeros_(self.mask_head[-1].bias)
-            print(f"✓ Auxiliary mask prediction head added at decoder output (full resolution)")
+            if get_verbose():
+                print(f"✓ Auxiliary mask prediction head added at decoder output (full resolution)")
         else:
             self.mask_head = None
 

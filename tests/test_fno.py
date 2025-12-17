@@ -103,19 +103,36 @@ class TestFNOBlockWithConditioning:
         assert y.shape == x.shape
     
     def test_conditioning_affects_output(self):
-        """Test that different conditioning produces different outputs."""
+        """Test that different conditioning produces different outputs after training.
+        
+        Note: With identity FiLM initialization (gamma=1, beta=0), conditioning
+        does NOT affect output at initialization. This is by design for stable
+        training. After training, the FiLM layer learns to modulate based on
+        conditioning. We test that the architecture supports this by verifying
+        that with non-identity FiLM weights, conditioning does affect output.
+        """
+        channels = 32
         block = FNOBlockWithConditioning(
-            channels=32, modes1=8, modes2=8, cond_dim=64
+            channels=channels, modes1=8, modes2=8, cond_dim=64
         )
+        
+        # Manually set FiLM output layer to non-identity to simulate trained state
+        # The FiLM layer outputs gamma (first half) and beta (second half)
+        with torch.no_grad():
+            # Find the final Linear layer in FiLM sequential
+            film_output_layer = block.film[-1]  # Last layer in Sequential
+            nn.init.normal_(film_output_layer.weight, mean=0.0, std=0.5)
+            nn.init.normal_(film_output_layer.bias, mean=0.0, std=0.5)
+        
         block.eval()
-        x = torch.randn(2, 32, 32, 32)
+        x = torch.randn(2, channels, 32, 32)
         cond1 = torch.randn(2, 64)
         cond2 = torch.randn(2, 64)
         
         y1 = block(x, cond1)
         y2 = block(x, cond2)
         
-        # Outputs should be different
+        # Outputs should be different with trained (non-identity) FiLM weights
         assert not torch.allclose(y1, y2, atol=1e-5)
 
 

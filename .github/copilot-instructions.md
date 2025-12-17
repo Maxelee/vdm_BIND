@@ -90,7 +90,7 @@ forward(x_t, t, conditioning=None, param_conditioning=None) -> prediction
 from vdm.methods import create_method, list_methods
 
 # List available methods
-print(list_methods())  # ['vdm', 'flow', 'consistency']
+print(list_methods())  # ['vdm', 'flow', 'consistency', 'dsm', 'ot_flow']
 
 # Create method with backbone
 method = create_method("vdm", backbone_type="dit-b", img_size=128)
@@ -111,6 +111,16 @@ samples = method.sample(conditioning, n_samples=16, n_steps=50)
 | `vdm` | Variational Diffusion Model | 250 | val/elbo |
 | `flow` | Flow Matching / Stochastic Interpolant | 50 | val/loss |
 | `consistency` | Consistency Models | 1-5 | val/loss |
+| `dsm` | Denoising Score Matching | 250 | val/loss |
+| `ot_flow` | Optimal Transport Flow Matching | 50 | val/loss |
+
+**Verbosity Control**:
+```python
+from vdm.backbones import set_verbose
+set_verbose(False)  # Suppress initialization messages
+# ... create models ...
+set_verbose(True)   # Re-enable messages
+```
 
 ## Project Structure
 

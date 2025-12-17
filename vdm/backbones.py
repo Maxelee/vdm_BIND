@@ -38,6 +38,40 @@ import torch.nn as nn
 from torch import Tensor
 
 
+def set_verbose(verbose: bool) -> None:
+    """
+    Set verbosity for backbone and method initialization messages.
+    
+    This is a convenience function that sets verbose mode for all
+    backbone modules (UNet, FNO, DiT) and methods module.
+    
+    Args:
+        verbose: If True, print initialization messages; if False, suppress them.
+    
+    Example:
+        from vdm.backbones import set_verbose
+        set_verbose(False)  # Quiet mode for cleaner output
+        backbone = create_backbone("unet-s", ...)
+        set_verbose(True)  # Re-enable messages
+    """
+    from vdm import networks_clean
+    networks_clean.set_verbose(verbose)
+    
+    # Also set for FNO
+    try:
+        from vdm import fno
+        fno.set_verbose(verbose)
+    except ImportError:
+        pass
+    
+    # Also set for methods module if available
+    try:
+        from vdm import methods
+        methods.set_verbose(verbose)
+    except ImportError:
+        pass
+
+
 # =============================================================================
 # Base Classes
 # =============================================================================

@@ -28,8 +28,20 @@ This implementation is designed to be compatible with ALL generative methods:
 - Consistency Models
 
 Interface follows the standard backbone API:
-    forward(t, x_t, conditioning, param_conditioning) -> output
 """
+
+# Verbosity control
+_VERBOSE = True
+
+def set_verbose(verbose: bool) -> None:
+    """Set verbosity for FNO initialization messages."""
+    global _VERBOSE
+    _VERBOSE = verbose
+
+def get_verbose() -> bool:
+    """Get current verbosity setting."""
+    return _VERBOSE
+
 
 import math
 from typing import Optional, Tuple, List, Union
@@ -78,16 +90,23 @@ class SpectralConv2d(nn.Module):
         self.modes1 = modes1  # Number of modes in x direction
         self.modes2 = modes2  # Number of modes in y direction
         
-        # Scale for initialization
-        scale = 1 / (in_channels * out_channels)
+        # Xavier-style initialization for spectral weights
+        # Standard deviation that preserves variance through the layer
+        std = (2.0 / (in_channels + out_channels)) ** 0.5
         
         # Complex weights for each quadrant of Fourier space
         # Shape: (in_channels, out_channels, modes1, modes2)
         self.weights1 = nn.Parameter(
-            scale * torch.rand(in_channels, out_channels, modes1, modes2, dtype=torch.cfloat)
+            torch.complex(
+                torch.randn(in_channels, out_channels, modes1, modes2) * std,
+                torch.randn(in_channels, out_channels, modes1, modes2) * std
+            )
         )
         self.weights2 = nn.Parameter(
-            scale * torch.rand(in_channels, out_channels, modes1, modes2, dtype=torch.cfloat)
+            torch.complex(
+                torch.randn(in_channels, out_channels, modes1, modes2) * std,
+                torch.randn(in_channels, out_channels, modes1, modes2) * std
+            )
         )
     
     def compl_mul2d(self, input: Tensor, weights: Tensor) -> Tensor:
@@ -243,6 +262,14 @@ class FNOBlockWithConditioning(nn.Module):
             nn.Linear(channels * 2, channels * 2),
         )
         
+        # Initialize FiLM to identity: gamma=1, beta=0
+        # This ensures signal passes through unchanged at init
+        nn.init.zeros_(self.film[-1].weight)
+        nn.init.zeros_(self.film[-1].bias)
+        # Set gamma bias to 1 (first half of output)
+        with torch.no_grad():
+            self.film[-1].bias[:channels] = 1.0
+        
         # Normalization
         self.norm = nn.GroupNorm(num_groups=min(32, channels), num_channels=channels)
         self.activation = nn.GELU()
@@ -256,6 +283,9 @@ class FNOBlockWithConditioning(nn.Module):
         Returns:
             (B, C, H, W)
         """
+        # Save residual
+        residual = x
+        
         # FNO forward
         x_spectral = self.spectral_conv(x)
         x_local = self.local_conv(x)
@@ -271,6 +301,9 @@ class FNOBlockWithConditioning(nn.Module):
         x = gamma * x + beta
         x = self.activation(x)
         x = self.dropout(x)
+        
+        # Residual connection for better gradient flow
+        x = x + residual
         
         return x
 
@@ -481,8 +514,13 @@ class FNO2d(nn.Module):
             nn.Conv2d(hidden_channels, out_channels, kernel_size=1),
         )
         
-        # Initialize output layer to zero for stable training
-        nn.init.zeros_(self.projection[-1].weight)
+        # Initialize projection layers with proper scaling
+        # First layer: standard initialization
+        nn.init.kaiming_normal_(self.projection[0].weight, mode='fan_out', nonlinearity='relu')
+        nn.init.zeros_(self.projection[0].bias)
+        # Final layer: scale to produce unit variance output
+        # With hidden_channels inputs, use std = 1/sqrt(hidden_channels)
+        nn.init.normal_(self.projection[-1].weight, mean=0.0, std=(1.0 / hidden_channels) ** 0.5)
         nn.init.zeros_(self.projection[-1].bias)
         
         # Print model info
@@ -490,6 +528,8 @@ class FNO2d(nn.Module):
     
     def _print_model_info(self):
         """Print model configuration."""
+        if not get_verbose():
+            return
         n_params = sum(p.numel() for p in self.parameters())
         print(f"\n{'='*60}")
         print("INITIALIZED FNO2d")
@@ -527,8 +567,12 @@ class FNO2d(nn.Module):
         # Build conditioning embedding
         t_emb = self.time_embed(t)  # (B, hidden)
         
-        if self.use_param_conditioning and param_conditioning is not None:
-            p_emb = self.param_embed(param_conditioning)  # (B, hidden)
+        if self.use_param_conditioning:
+            if param_conditioning is not None:
+                p_emb = self.param_embed(param_conditioning)  # (B, hidden)
+            else:
+                # If param_conditioning is None but model expects it, use zeros
+                p_emb = torch.zeros(B, self.hidden_channels, device=t_emb.device, dtype=t_emb.dtype)
             cond_emb = torch.cat([t_emb, p_emb], dim=-1)  # (B, 2*hidden)
         else:
             cond_emb = t_emb  # (B, hidden)
