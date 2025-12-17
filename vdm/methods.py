@@ -32,8 +32,9 @@ Architecture:
     ├── FlowMatchingMethod  - Flow Matching / Stochastic Interpolants
     ├── OTFlowMethod        - Optimal Transport Flow Matching
     ├── ConsistencyMethod   - Consistency Models
-    ├── DSMMethod           - Denoising Score Matching
-    └── DDPMMethod          - DDPM via score_models
+    └── DSMMethod           - Denoising Score Matching
+    
+Note: DDPM is available via the legacy ddpm_model.py using the score_models package.
 """
 
 from abc import ABC, abstractmethod
@@ -1318,6 +1319,475 @@ class ConsistencyMethod(BaseMethod):
                 
                 if return_trajectory:
                     trajectory.append(x.clone())
+        
+        if return_trajectory:
+            return x, trajectory
+        return x
+
+
+# =============================================================================
+# DSM (Denoising Score Matching) Method Implementation
+# =============================================================================
+
+@MethodRegistry.register("dsm")
+class DSMMethod(BaseMethod):
+    """
+    Denoising Score Matching method.
+    
+    VP-SDE formulation that predicts noise epsilon from noisy samples.
+    Uses the same architecture as VDM for fair comparison.
+    
+    Training:
+        - Forward: z_t = alpha_t * x + sigma_t * epsilon
+        - Loss: || model(z_t, t, cond) - epsilon ||^2 * w(t)
+    
+    Sampling:
+        - DDPM-style reverse diffusion from noise to data
+    
+    Reference: Song et al. (2021) "Score-Based Generative Modeling through SDEs"
+    """
+    
+    method_name = "dsm"
+    early_stopping_metric = "val/loss"
+    
+    def __init__(
+        self,
+        backbone: BackboneBase,
+        # Training parameters
+        learning_rate: float = 1e-4,
+        weight_decay: float = 1e-5,
+        lr_scheduler: str = "cosine",
+        warmup_steps: int = 0,
+        # DSM-specific parameters
+        beta_min: float = 0.1,
+        beta_max: float = 20.0,
+        use_snr_weighting: bool = True,
+        # Loss weighting
+        channel_weights: Tuple[float, ...] = (1.0, 1.0, 1.0),
+        # Sampling
+        n_sampling_steps: int = 250,
+        # Conditioning
+        use_param_conditioning: bool = False,
+        # Data shape
+        image_shape: Tuple[int, int, int] = (3, 128, 128),
+        **kwargs
+    ):
+        super().__init__(
+            backbone=backbone,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            lr_scheduler=lr_scheduler,
+            warmup_steps=warmup_steps,
+            n_sampling_steps=n_sampling_steps,
+            use_param_conditioning=use_param_conditioning,
+            image_shape=image_shape,
+        )
+        
+        self.beta_min = beta_min
+        self.beta_max = beta_max
+        self.use_snr_weighting = use_snr_weighting
+        self.channel_weights = channel_weights
+        
+        # Register channel weights as buffer
+        self.register_buffer(
+            "channel_weight_tensor",
+            torch.tensor(channel_weights).view(1, -1, 1, 1)
+        )
+        
+        self.save_hyperparameters(ignore=['backbone'])
+        
+        print(f"\n{'='*60}")
+        print("DSM METHOD INITIALIZED")
+        print("="*60)
+        print(f"  Backbone: {backbone.__class__.__name__}")
+        print(f"  Beta range: [{beta_min}, {beta_max}]")
+        print(f"  SNR weighting: {use_snr_weighting}")
+        print(f"  Sampling steps: {n_sampling_steps}")
+        print(f"  Channel weights: {channel_weights}")
+        print("="*60 + "\n")
+    
+    def alpha(self, t: Tensor) -> Tensor:
+        """Compute alpha(t) for VP-SDE."""
+        integral = self.beta_min * t + 0.5 * (self.beta_max - self.beta_min) * t ** 2
+        return torch.exp(-0.5 * integral)
+    
+    def sigma(self, t: Tensor) -> Tensor:
+        """Compute sigma(t) for VP-SDE."""
+        alpha_t = self.alpha(t)
+        return torch.sqrt(1 - alpha_t ** 2 + 1e-8)
+    
+    def snr(self, t: Tensor) -> Tensor:
+        """Compute SNR = alpha^2 / sigma^2."""
+        alpha_t = self.alpha(t)
+        sigma_t = self.sigma(t)
+        return alpha_t ** 2 / (sigma_t ** 2 + 1e-8)
+    
+    def compute_loss(
+        self,
+        x: Tensor,
+        conditioning: Tensor,
+        params: Optional[Tensor] = None,
+    ) -> Dict[str, Tensor]:
+        """Compute DSM loss."""
+        batch_size = x.shape[0]
+        device = x.device
+        
+        # Sample time uniformly
+        t = torch.rand(batch_size, device=device)
+        
+        # Get schedule values
+        alpha_t = self.alpha(t)[:, None, None, None]
+        sigma_t = self.sigma(t)[:, None, None, None]
+        
+        # Sample noise
+        epsilon = torch.randn_like(x)
+        
+        # Forward diffusion: z_t = alpha_t * x + sigma_t * epsilon
+        z_t = alpha_t * x + sigma_t * epsilon
+        
+        # Predict noise
+        epsilon_pred = self.backbone(z_t, t, conditioning, params)
+        
+        # MSE loss
+        mse = (epsilon_pred - epsilon) ** 2
+        
+        # Apply channel weights
+        mse_weighted = mse * self.channel_weight_tensor.to(device)
+        
+        # SNR weighting (optional)
+        if self.use_snr_weighting:
+            snr = self.snr(t)[:, None, None, None]
+            mse_weighted = mse_weighted * snr
+        
+        loss = mse_weighted.mean()
+        
+        return {
+            'loss': loss,
+            'mse': mse.mean(),
+        }
+    
+    def training_step(self, batch, batch_idx):
+        """Training step."""
+        x, conditioning, params = self._unpack_batch(batch)
+        loss_dict = self.compute_loss(x, conditioning, params)
+        
+        self.log("train/loss", loss_dict['loss'], prog_bar=True, sync_dist=True)
+        self.log("train/mse", loss_dict['mse'], sync_dist=True)
+        
+        return loss_dict['loss']
+    
+    def validation_step(self, batch, batch_idx):
+        """Validation step."""
+        x, conditioning, params = self._unpack_batch(batch)
+        loss_dict = self.compute_loss(x, conditioning, params)
+        
+        self.log("val/loss", loss_dict['loss'], prog_bar=True, sync_dist=True)
+        
+        return loss_dict['loss']
+    
+    @torch.no_grad()
+    def sample(
+        self,
+        conditioning: Tensor,
+        n_samples: int = 1,
+        n_steps: Optional[int] = None,
+        param_conditioning: Optional[Tensor] = None,
+        device: str = "cuda",
+        return_trajectory: bool = False,
+        verbose: bool = False,
+    ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
+        """Sample using DDPM-style reverse process."""
+        self.backbone.eval()
+        n_steps = n_steps or self.n_sampling_steps
+        
+        # Move conditioning to device
+        conditioning = conditioning.to(device)
+        
+        # Broadcast conditioning
+        if conditioning.shape[0] != n_samples:
+            conditioning = conditioning.expand(n_samples, -1, -1, -1)
+        if param_conditioning is not None:
+            param_conditioning = param_conditioning.to(device)
+            if param_conditioning.shape[0] != n_samples:
+                param_conditioning = param_conditioning.expand(n_samples, -1)
+        
+        # Time steps
+        timesteps = torch.linspace(1, 0, n_steps + 1, device=device)
+        
+        # Start from noise
+        x = torch.randn(n_samples, *self.image_shape, device=device)
+        
+        trajectory = [x.clone()] if return_trajectory else None
+        
+        iterator = tqdm(range(n_steps), desc="Sampling") if verbose else range(n_steps)
+        
+        for i in iterator:
+            t_curr = timesteps[i]
+            t_next = timesteps[i + 1]
+            
+            # Current time for batch
+            t_batch = torch.full((n_samples,), t_curr, device=device)
+            
+            # Predict noise
+            epsilon_pred = self.backbone(x, t_batch, conditioning, param_conditioning)
+            
+            # DDPM update
+            alpha_curr = self.alpha(t_curr)
+            sigma_curr = self.sigma(t_curr)
+            alpha_next = self.alpha(t_next)
+            sigma_next = self.sigma(t_next)
+            
+            # Predict x0
+            x0_pred = (x - sigma_curr * epsilon_pred) / alpha_curr
+            
+            # Compute posterior mean
+            if t_next > 0:
+                x = alpha_next * x0_pred + sigma_next * torch.randn_like(x)
+            else:
+                x = x0_pred
+            
+            if return_trajectory:
+                trajectory.append(x.clone())
+        
+        if return_trajectory:
+            return x, trajectory
+        return x
+
+
+# =============================================================================
+# OT Flow (Optimal Transport Flow Matching) Method Implementation
+# =============================================================================
+
+@MethodRegistry.register("ot_flow")
+class OTFlowMethod(BaseMethod):
+    """
+    Optimal Transport Flow Matching method.
+    
+    Uses optimal transport coupling for straighter interpolation paths.
+    
+    Training:
+        - Compute OT plan between batch samples
+        - Transport: x_t = (1-t) * x_0 + t * x_1 with OT coupling
+        - Velocity: v = x_1 - x_0 (under OT pairing)
+        - Loss: MSE between predicted and OT velocity
+    
+    Sampling:
+        - Integrate ODE: dx/dt = v(t, x) from t=0 to t=1
+    
+    Reference: Lipman et al. (2022) "Flow Matching for Generative Modeling"
+    """
+    
+    method_name = "ot_flow"
+    early_stopping_metric = "val/loss"
+    
+    def __init__(
+        self,
+        backbone: BackboneBase,
+        # Training parameters
+        learning_rate: float = 1e-4,
+        weight_decay: float = 1e-5,
+        lr_scheduler: str = "cosine",
+        warmup_steps: int = 0,
+        # OT-specific parameters
+        ot_method: str = "exact",  # 'exact' or 'sinkhorn'
+        ot_reg: float = 0.01,  # Sinkhorn regularization
+        x0_mode: str = "zeros",  # 'zeros', 'noise'
+        # Sampling
+        n_sampling_steps: int = 50,
+        # Conditioning
+        use_param_conditioning: bool = False,
+        # Data shape
+        image_shape: Tuple[int, int, int] = (3, 128, 128),
+        **kwargs
+    ):
+        super().__init__(
+            backbone=backbone,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            lr_scheduler=lr_scheduler,
+            warmup_steps=warmup_steps,
+            n_sampling_steps=n_sampling_steps,
+            use_param_conditioning=use_param_conditioning,
+            image_shape=image_shape,
+        )
+        
+        self.ot_method = ot_method
+        self.ot_reg = ot_reg
+        self.x0_mode = x0_mode
+        
+        # Check for POT library
+        try:
+            import ot
+            self._has_pot = True
+        except ImportError:
+            self._has_pot = False
+            print("Warning: POT library not installed. Using random coupling instead.")
+            print("Install with: pip install POT")
+        
+        self.save_hyperparameters(ignore=['backbone'])
+        
+        print(f"\n{'='*60}")
+        print("OT FLOW METHOD INITIALIZED")
+        print("="*60)
+        print(f"  Backbone: {backbone.__class__.__name__}")
+        print(f"  OT method: {ot_method}")
+        print(f"  x0 mode: {x0_mode}")
+        print(f"  Sampling steps: {n_sampling_steps}")
+        print(f"  POT available: {self._has_pot}")
+        print("="*60 + "\n")
+    
+    def compute_ot_plan(self, x0: Tensor, x1: Tensor) -> Tensor:
+        """Compute optimal transport coupling."""
+        batch_size = x0.shape[0]
+        device = x0.device
+        
+        if not self._has_pot:
+            # Fallback: random permutation
+            perm = torch.randperm(batch_size, device=device)
+            return perm
+        
+        import ot
+        
+        # Flatten for distance computation
+        x0_flat = x0.view(batch_size, -1).cpu().numpy()
+        x1_flat = x1.view(batch_size, -1).cpu().numpy()
+        
+        # Compute cost matrix (squared L2 distance)
+        M = ot.dist(x0_flat, x1_flat, metric='sqeuclidean')
+        
+        # Uniform marginals
+        a = np.ones(batch_size) / batch_size
+        b = np.ones(batch_size) / batch_size
+        
+        # Compute OT plan
+        if self.ot_method == 'exact':
+            plan = ot.emd(a, b, M)
+        else:  # sinkhorn
+            plan = ot.sinkhorn(a, b, M, self.ot_reg)
+        
+        # Convert plan to permutation (argmax per row)
+        perm = plan.argmax(axis=1)
+        
+        return torch.tensor(perm, device=device)
+    
+    def compute_loss(
+        self,
+        x: Tensor,
+        conditioning: Tensor,
+        params: Optional[Tensor] = None,
+    ) -> Dict[str, Tensor]:
+        """Compute OT Flow loss."""
+        batch_size = x.shape[0]
+        device = x.device
+        
+        # Generate source samples (x0)
+        if self.x0_mode == "zeros":
+            x0 = torch.zeros_like(x)
+        else:  # noise
+            x0 = torch.randn_like(x)
+        
+        x1 = x  # Target
+        
+        # Compute OT coupling
+        perm = self.compute_ot_plan(x0, x1)
+        x1_coupled = x1[perm]
+        
+        # If params and conditioning are provided, also couple them
+        if params is not None:
+            params_coupled = params[perm]
+        else:
+            params_coupled = None
+        
+        conditioning_coupled = conditioning[perm]
+        
+        # Sample time uniformly
+        t = torch.rand(batch_size, device=device)[:, None, None, None]
+        
+        # Interpolate with OT coupling
+        x_t = (1 - t) * x0 + t * x1_coupled
+        
+        # True velocity (OT path)
+        v_true = x1_coupled - x0
+        
+        # Predict velocity
+        t_flat = t.squeeze()
+        v_pred = self.backbone(x_t, t_flat, conditioning_coupled, params_coupled)
+        
+        # MSE loss
+        loss = F.mse_loss(v_pred, v_true)
+        
+        return {
+            'loss': loss,
+            'mse': loss,
+        }
+    
+    def training_step(self, batch, batch_idx):
+        """Training step."""
+        x, conditioning, params = self._unpack_batch(batch)
+        loss_dict = self.compute_loss(x, conditioning, params)
+        
+        self.log("train/loss", loss_dict['loss'], prog_bar=True, sync_dist=True)
+        
+        return loss_dict['loss']
+    
+    def validation_step(self, batch, batch_idx):
+        """Validation step."""
+        x, conditioning, params = self._unpack_batch(batch)
+        loss_dict = self.compute_loss(x, conditioning, params)
+        
+        self.log("val/loss", loss_dict['loss'], prog_bar=True, sync_dist=True)
+        
+        return loss_dict['loss']
+    
+    @torch.no_grad()
+    def sample(
+        self,
+        conditioning: Tensor,
+        n_samples: int = 1,
+        n_steps: Optional[int] = None,
+        param_conditioning: Optional[Tensor] = None,
+        device: str = "cuda",
+        return_trajectory: bool = False,
+        verbose: bool = False,
+    ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
+        """Sample using Euler integration."""
+        self.backbone.eval()
+        n_steps = n_steps or self.n_sampling_steps
+        
+        # Move conditioning to device
+        conditioning = conditioning.to(device)
+        
+        # Broadcast conditioning
+        if conditioning.shape[0] != n_samples:
+            conditioning = conditioning.expand(n_samples, -1, -1, -1)
+        if param_conditioning is not None:
+            param_conditioning = param_conditioning.to(device)
+            if param_conditioning.shape[0] != n_samples:
+                param_conditioning = param_conditioning.expand(n_samples, -1)
+        
+        # Initialize from source distribution
+        if self.x0_mode == "zeros":
+            x = torch.zeros(n_samples, *self.image_shape, device=device)
+        else:
+            x = torch.randn(n_samples, *self.image_shape, device=device)
+        
+        trajectory = [x.clone()] if return_trajectory else None
+        
+        # Euler integration from t=0 to t=1
+        dt = 1.0 / n_steps
+        iterator = tqdm(range(n_steps), desc="Sampling") if verbose else range(n_steps)
+        
+        for i in iterator:
+            t = torch.full((n_samples,), i * dt, device=device)
+            
+            # Predict velocity
+            v = self.backbone(x, t, conditioning, param_conditioning)
+            
+            # Euler step
+            x = x + dt * v
+            
+            if return_trajectory:
+                trajectory.append(x.clone())
         
         if return_trajectory:
             return x, trajectory
