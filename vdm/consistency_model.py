@@ -1,6 +1,16 @@
 """
 Consistency Model for VDM-BIND.
 
+.. deprecated:: 2.0.0
+    This module is kept for backward compatibility with existing checkpoints.
+    For new training, use `vdm.methods.ConsistencyMethod` instead:
+    
+    >>> from vdm.methods import create_method
+    >>> model = create_method('consistency', backbone_type='unet-b', img_size=128)
+    
+    The new API provides a cleaner Method + Backbone abstraction and is the
+    recommended approach going forward.
+
 This module implements Consistency Models (Song et al., 2023) for the DMO -> Hydro mapping.
 
 Key concepts:

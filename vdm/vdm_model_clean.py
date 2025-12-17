@@ -1,6 +1,16 @@
 """
 Clean Variational Diffusion Model for Astrophysical Data.
 
+.. deprecated:: 2.0.0
+    This module is kept for backward compatibility with existing checkpoints.
+    For new training, use `vdm.methods.VDMMethod` with `vdm.backbones` instead:
+    
+    >>> from vdm.methods import create_method
+    >>> model = create_method('vdm', backbone_type='unet-b', img_size=128)
+    
+    The new API provides a cleaner Method + Backbone abstraction and is the
+    recommended approach going forward.
+
 This is a simplified, transparent implementation following the VDM paper (arxiv:2107.00630).
 
 Key features:
@@ -21,6 +31,7 @@ Loss components:
 4. Parameter prediction loss: MSE between predicted and true parameters (optional)
 """
 
+import warnings
 import torch
 import numpy as np
 from torch import nn, Tensor, autograd

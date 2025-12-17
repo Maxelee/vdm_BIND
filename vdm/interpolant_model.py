@@ -1,6 +1,16 @@
 """
 Stochastic Interpolant Model for VDM-BIND.
 
+.. deprecated:: 2.0.0
+    This module is kept for backward compatibility with existing checkpoints.
+    For new training, use `vdm.methods.FlowMatchingMethod` instead:
+    
+    >>> from vdm.methods import create_method
+    >>> model = create_method('flow', backbone_type='unet-b', img_size=128)
+    
+    The new API provides a cleaner Method + Backbone abstraction and is the
+    recommended approach going forward.
+
 This module implements flow matching / stochastic interpolants for the DMO -> Hydro mapping,
 following the approach in BaryonBridge (Sadr et al.).
 

@@ -3,6 +3,9 @@ Workflow utilities for BIND inference.
 
 Provides ConfigLoader, ModelManager, and sampling functions.
 Supports both 'clean' (3-channel) and 'triple' (3 separate 1-channel) model types.
+
+NEW: Also supports 'zoo' models trained with the new Method + Backbone abstraction
+(see vdm/methods.py and vdm/backbones.py).
 """
 from lightning.pytorch import Trainer, seed_everything
 import sys
@@ -18,6 +21,10 @@ from vdm.verbosity import (
     SILENT, SUMMARY, DEBUG,
     VerbosityContext, verbose_to_level
 )
+
+# Import new Method + Backbone abstraction
+from vdm.methods import MethodRegistry, BaseMethod, create_method, list_methods
+from vdm.backbones import BackboneRegistry, create_backbone, list_backbones
 import torch
 import re
 import glob
@@ -490,11 +497,12 @@ class ModelManager:
         -------
         str
             Model type: 'clean', 'triple', 'ddpm', 'dsm', 'interpolant', 
-            'consistency', 'ot_flow', or 'dit'
+            'consistency', 'ot_flow', 'dit', or 'zoo'
         
         Notes
         -----
         Detection order:
+        0. Check config.model_name for 'zoo' (new Method + Backbone abstraction)
         1. Check config.model_name for 'dit' or 'transformer'
         2. Check config.model_name for 'consistency'
         3. Check config.model_name for 'ot_flow' or 'ot-flow' or 'optimal_transport'
@@ -506,10 +514,16 @@ class ModelManager:
         9. Default to 'clean'
         
         Returns:
-            str: 'clean', 'triple', 'ddpm', 'dsm', 'interpolant', 'consistency', 'ot_flow', or 'dit'
+            str: 'clean', 'triple', 'ddpm', 'dsm', 'interpolant', 'consistency', 'ot_flow', 'dit', or 'zoo'
         """
         # Method 1: Check model_name in config
         model_name = getattr(config, 'model_name', '').lower()
+        
+        # Check for zoo models (new Method + Backbone abstraction)
+        if 'zoo' in model_name or '_zoo' in model_name:
+            if verbose:
+                print(f"[ModelManager] Detected 'zoo' model from model_name: {model_name}")
+            return 'zoo'
         
         # Check for DiT (Diffusion Transformer) first
         if any(x in model_name for x in ['dit', 'diffusion_transformer', 'transformer']):
@@ -643,7 +657,9 @@ class ModelManager:
         # Detect model type
         model_type = ModelManager.detect_model_type(config, verbose=verbose)
         
-        if model_type == 'dit':
+        if model_type == 'zoo':
+            return ModelManager._initialize_zoo(config, verbose=verbose, skip_data_loading=skip_data_loading)
+        elif model_type == 'dit':
             return ModelManager._initialize_dit(config, verbose=verbose, skip_data_loading=skip_data_loading)
         elif model_type == 'consistency':
             return ModelManager._initialize_consistency(config, verbose=verbose, skip_data_loading=skip_data_loading)
@@ -2214,6 +2230,169 @@ class ModelManager:
             print(f"[ModelManager] Fourier features: {'LEGACY' if config.fourier_legacy else 'MULTI-SCALE' if config.use_fourier_features else 'DISABLED'}")
 
         return hydro, vdm_hydro
+
+    @staticmethod
+    def _initialize_zoo(config, verbose=False, skip_data_loading=False):
+        """
+        Initialize a 'zoo' model trained with the new Method + Backbone abstraction.
+        
+        Zoo models use vdm/methods.py (VDMMethod, FlowMatchingMethod, ConsistencyMethod)
+        with any backbone from vdm/backbones.py (UNet, DiT, FNO).
+        
+        The model type and backbone are read from the checkpoint's hyperparameters:
+        - hparams['method']: 'vdm', 'flow', or 'consistency'
+        - hparams['backbone_type']: 'unet', 'dit-b', 'fno-l', etc.
+        
+        Args:
+            config: Configuration object with best_ckpt path
+            verbose: Print debug information
+            skip_data_loading: If True, skip dataset loading
+            
+        Returns:
+            tuple: (dataloader_or_None, model)
+        """
+        if verbose:
+            print("[ModelManager] Initializing ZOO model (Method + Backbone abstraction)...")
+            print(f"[ModelManager] Using seed: {config.seed}")
+            print(f"[ModelManager] Checkpoint path: {getattr(config, 'best_ckpt', 'NOT SET')}")
+        
+        seed_everything(config.seed)
+        
+        # Load checkpoint to get hyperparameters
+        if not config.best_ckpt or not os.path.exists(config.best_ckpt):
+            raise ValueError(f"Zoo model requires a valid checkpoint. Got: {config.best_ckpt}")
+        
+        checkpoint = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)
+        hparams = checkpoint.get('hyper_parameters', {})
+        
+        if verbose:
+            print(f"[ModelManager] Loaded hyperparameters from checkpoint:")
+            for k, v in list(hparams.items())[:20]:  # Show first 20
+                print(f"  {k}: {v}")
+            if len(hparams) > 20:
+                print(f"  ... and {len(hparams) - 20} more")
+        
+        # Extract method and backbone type from hparams
+        method_type = hparams.get('method', 'vdm')
+        backbone_type = hparams.get('backbone_type', 'unet')
+        
+        if verbose:
+            print(f"[ModelManager] Detected method: {method_type}")
+            print(f"[ModelManager] Detected backbone: {backbone_type}")
+        
+        # Get backbone config from hparams
+        img_size = hparams.get('img_size', 128)
+        input_channels = hparams.get('input_channels', 3)
+        conditioning_channels = hparams.get('conditioning_channels', 1)
+        large_scale_channels = hparams.get('large_scale_channels', 3)
+        param_dim = hparams.get('param_dim', 0)
+        
+        # Build backbone kwargs from checkpoint hparams
+        backbone_kwargs = {
+            'input_channels': input_channels,
+            'output_channels': input_channels,
+            'conditioning_channels': conditioning_channels,
+            'large_scale_channels': large_scale_channels,
+            'param_dim': param_dim,
+            'img_size': img_size,
+            'param_min': hparams.get('param_min'),
+            'param_max': hparams.get('param_max'),
+        }
+        
+        # Add architecture-specific kwargs based on backbone type
+        base_backbone = backbone_type.split('-')[0].lower()
+        if base_backbone == 'unet':
+            backbone_kwargs.update({
+                'embedding_dim': hparams.get('embedding_dim', 128),
+                'n_blocks': hparams.get('n_blocks', 4),
+                'norm_groups': hparams.get('norm_groups', 8),
+                'n_attention_heads': hparams.get('n_attention_heads', 4),
+                'gamma_min': hparams.get('gamma_min', -13.3),
+                'gamma_max': hparams.get('gamma_max', 5.0),
+                'use_fourier_features': hparams.get('use_fourier_features', True),
+                'legacy_fourier': hparams.get('legacy_fourier', True),
+            })
+        elif base_backbone == 'dit':
+            backbone_kwargs.update({
+                'patch_size': hparams.get('patch_size', 4),
+                'hidden_size': hparams.get('hidden_size', 384),
+                'depth': hparams.get('depth', 12),
+                'num_heads': hparams.get('num_heads', 6),
+                'mlp_ratio': hparams.get('mlp_ratio', 4.0),
+            })
+        elif base_backbone == 'fno':
+            backbone_kwargs.update({
+                'hidden_channels': hparams.get('hidden_channels', 64),
+                'n_layers': hparams.get('n_layers', 4),
+                'modes': hparams.get('modes', 32),
+            })
+        
+        # Create method with backbone
+        if verbose:
+            print(f"[ModelManager] Creating {method_type} method with {backbone_type} backbone...")
+        
+        # Get method-specific kwargs from hparams
+        method_kwargs = {
+            'backbone_type': backbone_type,
+            'img_size': img_size,
+            'param_dim': param_dim,
+        }
+        
+        # Add method-specific parameters
+        if method_type == 'vdm':
+            method_kwargs.update({
+                'gamma_min': hparams.get('gamma_min', -13.3),
+                'gamma_max': hparams.get('gamma_max', 5.0),
+                'learning_rate': hparams.get('learning_rate', 1e-4),
+            })
+        elif method_type == 'flow':
+            method_kwargs.update({
+                'n_sampling_steps': hparams.get('n_sampling_steps', 50),
+                'learning_rate': hparams.get('learning_rate', 1e-4),
+            })
+        elif method_type == 'consistency':
+            method_kwargs.update({
+                'sigma_min': hparams.get('sigma_min', 0.002),
+                'sigma_max': hparams.get('sigma_max', 80.0),
+                'n_sampling_steps': hparams.get('n_sampling_steps', 1),
+                'learning_rate': hparams.get('learning_rate', 5e-5),
+            })
+        
+        # Pass backbone kwargs
+        method_kwargs['backbone_kwargs'] = backbone_kwargs
+        
+        # Create method
+        model = create_method(method_type, **method_kwargs)
+        
+        # Load state dict
+        state_dict = checkpoint.get('state_dict', {})
+        model.load_state_dict(state_dict)
+        model = model.eval()
+        
+        if verbose:
+            total_params = sum(p.numel() for p in model.parameters())
+            print(f"[ModelManager] Zoo model loaded successfully: {total_params:,} parameters")
+        
+        # Load data if needed
+        if skip_data_loading:
+            hydro = None
+        else:
+            if not config.train_samples:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+            else:
+                test_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+            hydro = get_astro_data(
+                config.dataset,
+                test_root,
+                num_workers=config.num_workers,
+                batch_size=config.batch_size,
+                stage='test',
+                quantile_path=getattr(config, 'quantile_path', None)
+            )
+            if verbose:
+                print(f"[ModelManager] Dataset loaded.")
+        
+        return hydro, model
 
 class DataHandler:
     PROJ_DIRS = ['yz', 'xz', 'xy']
