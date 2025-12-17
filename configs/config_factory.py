@@ -94,6 +94,27 @@ METHOD_DEFAULTS = {
         "n_sampling_steps": 1,
         "early_stopping_metric": "val/loss",
     },
+    "dsm": {
+        "beta_min": 0.1,
+        "beta_max": 20.0,
+        "use_snr_weighting": True,
+        "channel_weights": "1.0, 1.0, 3.0",
+        "learning_rate": 1e-4,
+        "weight_decay": 1e-5,
+        "lr_scheduler": "cosine_warmup",
+        "n_sampling_steps": 250,
+        "early_stopping_metric": "val/loss",
+    },
+    "ot_flow": {
+        "ot_method": "exact",  # 'exact' or 'sinkhorn'
+        "ot_reg": 0.01,  # Sinkhorn regularization
+        "x0_mode": "zeros",
+        "learning_rate": 1e-4,
+        "weight_decay": 1e-5,
+        "lr_scheduler": "cosine_warmup",
+        "n_sampling_steps": 50,
+        "early_stopping_metric": "val/loss",
+    },
 }
 
 
