@@ -104,32 +104,44 @@ class TestInterpolant:
         assert epsilon is None  # No epsilon for deterministic interpolant
     
     def test_sample_xt_stochastic(self):
-        """Test that sample_xt with stochasticity adds noise and returns epsilon."""
+        """Test that sample_xt with stochasticity uses BaryonBridge formulation."""
         from vdm.interpolant_model import Interpolant
         
         class DummyVelocity(torch.nn.Module):
             def forward(self, t, x, conditioning=None, param_conditioning=None):
                 return torch.zeros_like(x)
         
-        sigma = 0.1
-        interpolant = Interpolant(velocity_model=DummyVelocity(), use_stochastic_interpolant=True, sigma=sigma)
+        interpolant = Interpolant(velocity_model=DummyVelocity(), use_stochastic_interpolant=True)
         
         batch_size = 4
         x0 = torch.randn(batch_size, 3, 32, 32)
         x1 = torch.randn(batch_size, 3, 32, 32)
-        t = torch.full((batch_size,), 0.5)  # t=0.5 for maximum noise
+        t = torch.full((batch_size,), 0.5)
         
+        # Sample x_t
         x_t, epsilon = interpolant.sample_xt(x0, x1, t)
-        mu_t = interpolant.get_mu_t(x0, x1, t)
-        sigma_t = interpolant.get_sigma_t(t)
         
         assert epsilon is not None
-        # x_t should be mu_t + sigma_t * epsilon
-        expected_x_t = mu_t + sigma_t * epsilon
+        
+        # BaryonBridge formulation: x_t = alpha(t)*x0 + beta(t)*x1 + sqrt(t)*sigma(t)*epsilon
+        # At t=0.5: alpha=0.5, beta=0.25, sqrt(t)*sigma(t) = sqrt(0.5)*(1-0.5) = 0.5*0.707...
+        t_view = t.view(batch_size, 1, 1, 1)
+        expected_x_t = interpolant.get_xt_stochastic(x0, x1, t, epsilon)
         assert torch.allclose(x_t, expected_x_t, atol=1e-6)
+        
+        # Check boundary conditions
+        t0 = torch.zeros(batch_size)
+        x_t0, _ = interpolant.sample_xt(x0, x1, t0)
+        assert torch.allclose(x_t0, x0, atol=1e-6), "At t=0, x_t should equal x0"
+        
+        t1 = torch.ones(batch_size)
+        eps_test = torch.randn_like(x0)
+        x_t1 = interpolant.get_xt_stochastic(x0, x1, t1, eps_test)
+        # At t=1: alpha=0, beta=1, sqrt(1)*(1-1)=0, so x_t = x1
+        assert torch.allclose(x_t1, x1, atol=1e-6), "At t=1, x_t should equal x1"
     
     def test_stochastic_loss_includes_noise_term(self):
-        """Test that stochastic interpolant loss target includes gamma_dot * z."""
+        """Test that stochastic interpolant loss target uses BaryonBridge r_t formulation."""
         from vdm.interpolant_model import Interpolant
         
         # Create a velocity model that just returns the input so we can inspect the loss
@@ -137,22 +149,22 @@ class TestInterpolant:
             def forward(self, t, x, conditioning=None, param_conditioning=None):
                 return x  # Return x so loss = MSE(x, v_true)
         
-        sigma = 0.1
-        interp_stoch = Interpolant(velocity_model=IdentityVelocity(), use_stochastic_interpolant=True, sigma=sigma)
+        # Stochastic uses BaryonBridge formulation with built-in noise
+        interp_stoch = Interpolant(velocity_model=IdentityVelocity(), use_stochastic_interpolant=True)
         interp_det = Interpolant(velocity_model=IdentityVelocity(), use_stochastic_interpolant=False)
         
         batch_size = 4
         x0 = torch.randn(batch_size, 3, 32, 32)
         x1 = torch.randn(batch_size, 3, 32, 32)
-        t = torch.full((batch_size,), 0.5)  # t=0.5 for maximum effect
+        t = torch.full((batch_size,), 0.5)
         
-        # Compute losses - they should differ because stochastic includes gamma_dot * z term
+        # Compute losses - they should differ because stochastic uses r_t = alpha_dot*x0 + beta_dot*x1 + ...
         torch.manual_seed(42)
         loss_stoch = interp_stoch.compute_loss(x0, x1, t=t)
         torch.manual_seed(42)
         loss_det = interp_det.compute_loss(x0, x1, t=t)
         
-        # Losses should be different due to the noise term
+        # Losses should be different due to different formulations
         assert not torch.allclose(loss_stoch, loss_det)
 
 

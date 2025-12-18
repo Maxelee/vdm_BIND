@@ -56,8 +56,8 @@ MODELS=(
 )
 
 CONFIGS=(
-    "configs/clean_vdm_aggressive_stellar.ini"
-    "configs/clean_vdm_triple.ini"
+    "configs/clean_vdm_regularized.ini"
+    "configs/clean_vdm_triple_regularized.ini"
     "configs/ddpm.ini"
     "configs/dsm.ini"
     "configs/interpolant.ini"

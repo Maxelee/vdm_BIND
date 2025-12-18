@@ -6,16 +6,14 @@ following the approach in BaryonBridge (Sadr et al.).
 
 Key concepts:
 - Flow matching learns a velocity field v(t, x) that transports x_0 -> x_1
-- Interpolation: x_t = t * x_1 + (1-t) * x_0 (linear interpolation)
-- Velocity: v_t = x_1 - x_0 (constant velocity for linear interpolant)
-- Loss: MSE between predicted v_t and true velocity
-- Sampling: Integrate ODE dx/dt = v(t, x) from t=0 to t=1
-
-Advantages over diffusion:
-- Simpler loss function (just MSE on velocity)
-- Fewer hyperparameters (no noise schedule)
-- Often faster sampling (fewer steps needed)
-- Deterministic ODE sampling (no stochasticity)
+- Stochastic Interpolant formulation (BaryonBridge):
+  - x_t = alpha(t)*x_0 + beta(t)*x_1 + sqrt(t)*sigma(t)*epsilon
+  - where alpha(t)=1-t, beta(t)=t^2, sigma(t)=1-t
+  - Target velocity r_t = alpha_dot*x_0 + beta_dot*x_1 + sigma_dot*sqrt(t)*epsilon
+- Deterministic Interpolant (linear flow matching):
+  - x_t = (1-t)*x_0 + t*x_1 (linear interpolation)
+  - Velocity: v_t = x_1 - x_0 (constant velocity)
+  - Sampling: Integrate ODE dx/dt = v(t, x) from t=0 to t=1
 
 Integration with VDM-BIND:
 - Uses same AstroDataset and normalization as VDM/DDPM
@@ -59,20 +57,24 @@ class Interpolant(nn.Module):
     """
     Stochastic Interpolant for flow matching.
     
-    Implements the flow matching formulation where we learn a velocity field
-    that transports from a base distribution x_0 to target distribution x_1.
+    Implements the BaryonBridge stochastic interpolant formulation where we learn
+    a velocity field that transports from x_0 to x_1 via a stochastic path.
     
-    For our case:
-        x_0 = Some representation of the DMO input (e.g., noise or zeros)
-        x_1 = Target hydro output [DM_hydro, Gas, Stars]
+    For stochastic interpolants (BaryonBridge formulation):
+        x_t = alpha(t)*x_0 + beta(t)*x_1 + sqrt(t)*sigma(t)*epsilon
+        where alpha(t)=1-t, beta(t)=t^2, sigma(t)=1-t
         
-    The velocity model predicts v(t, x_t, condition) and we train with:
-        Loss = E_t E_{x_0, x_1} || v(t, x_t, cond) - (x_1 - x_0) ||^2
+        Target velocity: r_t = alpha_dot*x_0 + beta_dot*x_1 + sigma_dot*sqrt(t)*epsilon
+        where alpha_dot=-1, beta_dot=2t, sigma_dot=-1
+    
+    For deterministic interpolants (linear flow matching):
+        x_t = (1-t)*x_0 + t*x_1
+        Target velocity: v = x_1 - x_0
     
     Args:
         velocity_model: Neural network that predicts velocity field
-        use_stochastic_interpolant: Whether to add noise during interpolation
-        sigma: Noise scale for stochastic interpolant (if enabled)
+        use_stochastic_interpolant: Whether to use stochastic interpolant (BaryonBridge)
+        sigma: Base noise scale (only for deterministic mode, stochastic uses 1-t)
     """
     
     def __init__(
@@ -86,86 +88,115 @@ class Interpolant(nn.Module):
         self.use_stochastic_interpolant = use_stochastic_interpolant
         self.sigma = sigma
     
+    # =========================================================================
+    # BaryonBridge Stochastic Interpolant functions (when use_stochastic=True)
+    # =========================================================================
+    
+    def get_alpha_t(self, t: Tensor) -> Tensor:
+        """alpha(t) = 1 - t"""
+        return 1 - t
+    
+    def get_beta_t(self, t: Tensor) -> Tensor:
+        """beta(t) = t^2"""
+        return t ** 2
+    
+    def get_sigma_t_stochastic(self, t: Tensor) -> Tensor:
+        """sigma(t) = 1 - t for stochastic interpolant"""
+        return 1 - t
+    
+    def get_alpha_t_dot(self, t: Tensor) -> Tensor:
+        """d/dt[alpha(t)] = -1"""
+        return -torch.ones_like(t)
+    
+    def get_beta_t_dot(self, t: Tensor) -> Tensor:
+        """d/dt[beta(t)] = 2t"""
+        return 2.0 * t
+    
+    def get_sigma_t_dot(self, t: Tensor) -> Tensor:
+        """d/dt[sigma(t)] = -1"""
+        return -torch.ones_like(t)
+    
+    def get_xt_stochastic(self, x0: Tensor, x1: Tensor, t: Tensor, epsilon: Tensor) -> Tensor:
+        """
+        Compute x_t for stochastic interpolant (BaryonBridge formulation).
+        
+        x_t = alpha(t)*x_0 + beta(t)*x_1 + sqrt(t)*sigma(t)*epsilon
+        """
+        t = t.view(t.shape[0], *([1] * (x0.dim() - 1)))
+        return (
+            self.get_alpha_t(t) * x0
+            + self.get_beta_t(t) * x1
+            + torch.sqrt(t) * self.get_sigma_t_stochastic(t) * epsilon
+        )
+    
+    def get_rt(self, x0: Tensor, x1: Tensor, t: Tensor, epsilon: Tensor) -> Tensor:
+        """
+        Compute target velocity r_t for stochastic interpolant (BaryonBridge formulation).
+        
+        r_t = alpha_dot(t)*x_0 + beta_dot(t)*x_1 + sigma_dot(t)*sqrt(t)*epsilon
+        """
+        t = t.view(t.shape[0], *([1] * (x0.dim() - 1)))
+        return (
+            self.get_alpha_t_dot(t) * x0
+            + self.get_beta_t_dot(t) * x1
+            + self.get_sigma_t_dot(t) * torch.sqrt(t) * epsilon
+        )
+    
+    # =========================================================================
+    # Deterministic (Linear) Interpolant functions (when use_stochastic=False)
+    # =========================================================================
+    
     def get_mu_t(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
         """
-        Compute mean of interpolant at time t.
+        Compute mean of interpolant at time t (linear interpolation).
         
         Linear interpolation: mu_t = t * x_1 + (1 - t) * x_0
-        
-        Args:
-            x0: Source (B, C, H, W) - typically zeros or noise
-            x1: Target (B, C, H, W) - hydro output
-            t: Time (B,) in [0, 1]
-        
-        Returns:
-            mu_t: Interpolated mean (B, C, H, W)
         """
-        # Reshape t for broadcasting: (B,) -> (B, 1, 1, 1)
         t = t.view(t.shape[0], *([1] * (x0.dim() - 1)))
         return t * x1 + (1 - t) * x0
     
     def get_sigma_t(self, t: Tensor) -> Tensor:
         """
-        Compute noise scale at time t for stochastic interpolant.
+        Compute noise scale at time t for deterministic interpolant with optional noise.
         
         sigma(t) = sigma * sqrt(2 * t * (1 - t))
-        
         This is 0 at t=0 and t=1, maximal at t=0.5.
         """
-        t = t.view(t.shape[0], *([1] * 3))  # (B, 1, 1, 1)
+        t = t.view(t.shape[0], *([1] * 3))
         return self.sigma * torch.sqrt(2 * t * (1 - t))
-    
-    def get_sigma_t_derivative(self, t: Tensor) -> Tensor:
-        """
-        Compute d/dt[sigma(t)] for stochastic interpolant loss target.
-        
-        d/dt[sigma * sqrt(2*t*(1-t))] = sigma * (1 - 2t) / sqrt(2*t*(1-t))
-        
-        This is needed for the correct loss formulation per Albergo et al. (2023).
-        """
-        t = t.view(t.shape[0], *([1] * 3))  # (B, 1, 1, 1)
-        # Avoid division by zero at t=0 and t=1 by clamping
-        t_clamped = torch.clamp(t, min=1e-5, max=1 - 1e-5)
-        denominator = torch.sqrt(2 * t_clamped * (1 - t_clamped))
-        return self.sigma * (1 - 2 * t) / denominator
     
     def sample_xt(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tuple[Tensor, Optional[Tensor]]:
         """
         Sample x_t from the interpolant distribution.
         
-        For deterministic: x_t = mu_t
-        For stochastic: x_t = mu_t + sigma_t * epsilon
-        
-        Args:
-            x0: Source (B, C, H, W)
-            x1: Target (B, C, H, W)
-            t: Time (B,)
+        For stochastic (BaryonBridge): x_t = alpha(t)*x_0 + beta(t)*x_1 + sqrt(t)*sigma(t)*eps
+        For deterministic: x_t = (1-t)*x_0 + t*x_1 (optionally + sigma*noise)
         
         Returns:
             x_t: Interpolated sample (B, C, H, W)
             epsilon: The noise used (B, C, H, W) if stochastic, else None
         """
-        mu_t = self.get_mu_t(x0, x1, t)
-        
-        if self.use_stochastic_interpolant and self.sigma > 0:
-            sigma_t = self.get_sigma_t(t)
-            epsilon = torch.randn_like(mu_t)
-            return mu_t + sigma_t * epsilon, epsilon
-        
-        return mu_t, None
+        if self.use_stochastic_interpolant:
+            # BaryonBridge stochastic interpolant
+            epsilon = torch.randn_like(x0)
+            x_t = self.get_xt_stochastic(x0, x1, t, epsilon)
+            return x_t, epsilon
+        else:
+            # Deterministic linear interpolant
+            mu_t = self.get_mu_t(x0, x1, t)
+            
+            if self.sigma > 0:
+                sigma_t = self.get_sigma_t(t)
+                epsilon = torch.randn_like(mu_t)
+                return mu_t + sigma_t * epsilon, epsilon
+            
+            return mu_t, None
     
     def get_velocity(self, x0: Tensor, x1: Tensor) -> Tensor:
         """
-        Compute the true velocity field.
+        Compute the true velocity field for deterministic interpolant.
         
         For linear interpolant: v = x_1 - x_0 (constant velocity)
-        
-        Args:
-            x0: Source (B, C, H, W)
-            x1: Target (B, C, H, W)
-        
-        Returns:
-            velocity: True velocity (B, C, H, W)
         """
         return x1 - x0
     
@@ -180,19 +211,18 @@ class Interpolant(nn.Module):
         """
         Compute the flow matching loss.
         
+        For stochastic interpolants (BaryonBridge):
+            Loss = E_t E_{x_0, x_1, epsilon} || v_theta(t, x_t, cond) - r_t ||^2
+            where r_t = alpha_dot*x_0 + beta_dot*x_1 + sigma_dot*sqrt(t)*epsilon
+        
         For deterministic interpolants:
             Loss = E_t E_{x_0, x_1} || v_theta(t, x_t, cond) - (x_1 - x_0) ||^2
         
-        For stochastic interpolants (Albergo et al. 2023, Eq. 2.13):
-            Loss = E_t E_{x_0, x_1, z} || v_theta(t, x_t, cond) - (x_1 - x_0 + gamma_dot(t) * z) ||^2
-        
-        where gamma_dot(t) = d/dt[sigma * sqrt(2*t*(1-t))]
-        
         Args:
-            x0: Source (B, C, H, W) - zeros or noise
-            x1: Target (B, C, H, W) - hydro output
-            conditioning: Spatial conditioning (B, C_cond, H, W) - DM + large-scale
-            param_conditioning: Parameter conditioning (B, N_params) - cosmological parameters
+            x0: Source (B, C, H, W)
+            x1: Target (B, C, H, W)
+            conditioning: Spatial conditioning (B, C_cond, H, W)
+            param_conditioning: Parameter conditioning (B, N_params)
             t: Optional time (B,). If None, uniformly sampled.
         
         Returns:
@@ -205,16 +235,14 @@ class Interpolant(nn.Module):
         x_t, epsilon = self.sample_xt(x0, x1, t)
         
         # Compute true velocity target
-        # Base velocity: d/dt[(1-t)*x0 + t*x1] = x1 - x0
-        v_true = self.get_velocity(x0, x1)
+        if self.use_stochastic_interpolant:
+            # BaryonBridge: target is r_t (derivative of x_t)
+            v_true = self.get_rt(x0, x1, t, epsilon)
+        else:
+            # Deterministic: target is x_1 - x_0
+            v_true = self.get_velocity(x0, x1)
         
-        # For stochastic interpolants, add the noise term: gamma_dot(t) * z
-        # This follows Eq. 2.13 from Albergo et al. (2023)
-        if self.use_stochastic_interpolant and self.sigma > 0 and epsilon is not None:
-            gamma_dot = self.get_sigma_t_derivative(t)
-            v_true = v_true + gamma_dot * epsilon
-        
-        # Predict velocity (pass param_conditioning to velocity model)
+        # Predict velocity
         v_pred = self.velocity_model(t, x_t, conditioning, param_conditioning)
         
         # MSE loss
@@ -236,29 +264,27 @@ class Interpolant(nn.Module):
         """
         Generate samples by integrating the ODE/SDE.
         
-        ODE mode: dx/dt = v(t, x, cond)
-        SDE mode: dx = v(t, x, cond) dt + sigma * sqrt(dt) * dW
+        For stochastic interpolants (BaryonBridge), uses Euler-Maruyama with
+        diffusion coefficient sigma(t) = 1 - t.
         
-        Uses Euler(-Maruyama) integration from t=0 to t=1.
+        For deterministic interpolants, uses Euler integration.
         
         Args:
-            x0: Initial state (B, C, H, W) - typically DM condition or noise
+            x0: Initial state (B, C, H, W)
             conditioning: Spatial conditioning (B, C_cond, H, W)
-            param_conditioning: Parameter conditioning (B, N_params) - cosmological parameters
+            param_conditioning: Parameter conditioning (B, N_params)
             n_steps: Number of integration steps
             return_trajectory: Whether to return full trajectory
-            stochastic: Whether to use SDE sampling (adds noise at each step).
-                       If None, uses self.use_stochastic_interpolant
-            sde_noise_scale: Noise scale for SDE sampling. If None, uses self.sigma
+            stochastic: Whether to use SDE sampling. If None, uses self.use_stochastic_interpolant
+            sde_noise_scale: Noise scale for SDE. If None, uses 1.0 for stochastic mode
         
         Returns:
             x1: Final sample (B, C, H, W), or trajectory list
         """
-        # Determine whether to use stochastic sampling
         if stochastic is None:
             stochastic = self.use_stochastic_interpolant
         if sde_noise_scale is None:
-            sde_noise_scale = self.sigma if self.sigma > 0 else 0.1  # Default noise scale
+            sde_noise_scale = 1.0  # Default for BaryonBridge-style SDE
         
         dt = 1.0 / n_steps
         x = x0.clone()
@@ -266,19 +292,27 @@ class Interpolant(nn.Module):
         trajectory = [x.clone()] if return_trajectory else None
         
         for i in range(n_steps):
-            t = torch.full((x.shape[0],), i * dt, device=x.device, dtype=x.dtype)
+            t_val = i * dt
+            t = torch.full((x.shape[0],), t_val, device=x.device, dtype=x.dtype)
             
-            # Predict velocity (pass param_conditioning)
+            # Predict velocity
             v = self.velocity_model(t, x, conditioning, param_conditioning)
             
             # Euler step (deterministic part)
             x = x + v * dt
             
             # Add noise for SDE sampling (Euler-Maruyama)
-            # Scale noise by sqrt(dt) for proper Brownian motion scaling
-            # Also scale down noise as t approaches 1 to ensure convergence
+            # For BaryonBridge: diffusion = sigma(t) = 1 - t
+            # dW ~ sqrt(dt) * N(0,1)
             if stochastic and i < n_steps - 1:  # Don't add noise on last step
-                noise_scale = sde_noise_scale * math.sqrt(dt) * (1.0 - (i + 1) * dt)
+                if self.use_stochastic_interpolant:
+                    # BaryonBridge diffusion: sigma(t) = 1 - t
+                    diffusion = (1 - t_val) * sde_noise_scale
+                else:
+                    # Custom diffusion with decay
+                    diffusion = sde_noise_scale * (1.0 - (i + 1) * dt)
+                
+                noise_scale = diffusion * math.sqrt(dt)
                 x = x + noise_scale * torch.randn_like(x)
             
             if return_trajectory:

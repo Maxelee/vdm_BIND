@@ -56,8 +56,8 @@ def extract_halo_cutout(field_2d, center, size_mpc, box_size, resolution, axis=2
     return extracted
 
 
-def compute_power_spectrum(final_maps, sim_grid, full_hydro, boxsize, output_dir, sim_label, img_base_path):
-    """Compute power spectra and create plots."""
+def compute_power_spectrum(final_maps, sim_grid, full_hydro, boxsize, output_dir, sim_label, img_base_path, save_plots=False):
+    """Compute power spectra and optionally create plots."""
     print(f"Computing power spectra for {sim_label}")
     
     box_size = boxsize / 1000.0  # in Mpc/h
@@ -78,23 +78,24 @@ def compute_power_spectrum(final_maps, sim_grid, full_hydro, boxsize, output_dir
     ratio_bind = np.mean(np.array(Pks_bind) / Pk2D_dmo.Pk, axis=0)
     std_bind = np.std(np.array(Pks_bind) / Pk2D_dmo.Pk, axis=0)
     
-    # Plot
-    plt.figure(figsize=(10, 6))
-    plt.semilogx(k[1:], ratio_hydro[1:], 'r-', label='Hydro/DMO', linewidth=2.5, alpha=0.8)
-    plt.semilogx(k[1:], ratio_bind[1:], 'b-', label='Mean BIND/DMO', linewidth=2.5, alpha=0.8)
-    plt.fill_between(k[1:], (ratio_bind - std_bind)[1:], (ratio_bind + std_bind)[1:], 
-                     alpha=0.3, color='b', label='BIND Std')
-    plt.xlabel('k [h/Mpc]', fontsize=12)
-    plt.ylabel('Power Spectrum Ratio', fontsize=12)
-    plt.title(f'Power Spectrum Suppression - {sim_label}', fontsize=14, fontweight='bold')
-    plt.legend(fontsize=11)
-    plt.grid(True, alpha=0.3)
-    plt.ylim(0.1, 1.5)
-    plt.tight_layout()
-    
-    os.makedirs(img_base_path, exist_ok=True)
-    plt.savefig(os.path.join(img_base_path, f'power_spec_{sim_label}.png'), dpi=150)
-    plt.close()
+    # Plot (optional)
+    if save_plots:
+        plt.figure(figsize=(10, 6))
+        plt.semilogx(k[1:], ratio_hydro[1:], 'r-', label='Hydro/DMO', linewidth=2.5, alpha=0.8)
+        plt.semilogx(k[1:], ratio_bind[1:], 'b-', label='Mean BIND/DMO', linewidth=2.5, alpha=0.8)
+        plt.fill_between(k[1:], (ratio_bind - std_bind)[1:], (ratio_bind + std_bind)[1:], 
+                         alpha=0.3, color='b', label='BIND Std')
+        plt.xlabel('k [h/Mpc]', fontsize=12)
+        plt.ylabel('Power Spectrum Ratio', fontsize=12)
+        plt.title(f'Power Spectrum Suppression - {sim_label}', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        plt.ylim(0.1, 1.5)
+        plt.tight_layout()
+        
+        os.makedirs(img_base_path, exist_ok=True)
+        plt.savefig(os.path.join(img_base_path, f'power_spec_{sim_label}.png'), dpi=150)
+        plt.close()
     
     # Save power spectra
     np.savez(os.path.join(output_dir, 'power_spec.npz'), 
@@ -483,11 +484,11 @@ def process_simulation(sim_info, args):
             np.save(os.path.join(paste_dir, f'final_map_{i}.npy'), fm)
         print(f"Saved final maps to {paste_dir}")
     
-    # Step 6: Compute power spectra
+    # Step 6: Compute power spectra (data only, no plots by default)
     if not os.path.exists(os.path.join(paste_dir, 'power_spec.npz')) or args.regenerate or args.repaste:
         img_path = os.path.join('/mnt/home/mlee1/BIND3d/imgs_new', args.model_name, suite)
         compute_power_spectrum(final_maps, sim_grid, full_hydro, args.boxsize, 
-                             paste_dir, f"{suite}_{sim_num}", img_path)
+                             paste_dir, f"{suite}_{sim_num}", img_path, save_plots=args.save_plots)
     
     # Step 7: Run comprehensive analyses (if requested)
     if args.run_analyses:
@@ -700,6 +701,8 @@ def main():
                        help='Generate parameter extremes comparison plot for 1P suite')
     parser.add_argument('--prep_only', action='store_true',
                        help='Only prepare data (full maps, cutouts, metadata) without running BIND generation')
+    parser.add_argument('--save_plots', action='store_true',
+                       help='Save power spectrum and analysis plots (default: False, only save data)')
     
     args = parser.parse_args()
     

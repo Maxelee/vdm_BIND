@@ -7,9 +7,9 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=10
 #SBATCH --ntasks=1
-#SBATCH --job-name=bind_array
-#SBATCH --output=logs/bind_array_%A_%a.out
-#SBATCH --error=logs/bind_array_%A_%a.err
+#SBATCH --job-name=bind_cv
+#SBATCH --output=/mnt/home/mlee1/ceph/logs/bind_array_%A_%a.out
+#SBATCH --error=/mnt/home/mlee1/ceph/logs/bind_array_%A_%a.err
 # ============================================================================
 # SLURM Array Job for Parallel BIND Processing
 # ============================================================================
@@ -36,8 +36,8 @@
 #
 # ============================================================================
 
-# Create logs directory if it doesn't exist
-mkdir -p logs
+# Ensure logs directory exists
+mkdir -p /mnt/home/mlee1/ceph/logs
 
 # Activate conda environment
 module load test_torch
@@ -48,9 +48,9 @@ source /mnt/home/mlee1/venvs/torch3/bin/activate
 # ============================================================================
 
 # Suite and Model Configuration
-SUITE=${SUITE:-"sb35"}  # cv, sb35, or 1p
-MODEL_NAME=${MODEL_NAME:-"clean_vdm_aggressive_stellar_nofocus"}
-CONFIG_PATH=${CONFIG_PATH:-"/mnt/home/mlee1/vdm_BIND/configs/clean_vdm_aggressive_stellar.ini"}
+SUITE=${SUITE:-"cv"}  # cv, sb35, or 1p
+MODEL_NAME=${MODEL_NAME:-"clean_vdm_regularized"}
+CONFIG_PATH=${CONFIG_PATH:-"/mnt/home/mlee1/vdm_BIND/configs/clean_vdm_regularized.ini"}
 
 # Output Configuration
 BASE_OUTPATH=${BASE_OUTPATH:-"/mnt/home/mlee1/ceph/BIND2d_new"}
@@ -61,16 +61,17 @@ GRIDSIZE=${GRIDSIZE:-1024}
 USE_ENHANCED=${USE_ENHANCED:-"--use_enhanced"}
 REALIZATIONS=${REALIZATIONS:-10}
 
-# Control flags
-REGENERATE=${REGENERATE:-"--regenerate"}
-REGENERATE_ALL=${REGENERATE_ALL:-"--regenerate_all"}
-REPASTE=${REPASTE:-"--repaste"}
+# Control flags - set to empty string to disable
+REGENERATE=${REGENERATE:-""}
+REGENERATE_ALL=${REGENERATE_ALL:-""}
+REPASTE=${REPASTE:-""}
 DO_HYDRO_REPLACE=${DO_HYDRO_REPLACE:-""}
 
-# Analysis flags
-RUN_ANALYSES=${RUN_ANALYSES:-"--run_analyses"}
+# Analysis flags - disabled by default to skip plot generation
+RUN_ANALYSES=${RUN_ANALYSES:-""}
 RUN_1P_EXTREMES=${RUN_1P_EXTREMES:-""}
 PREP_ONLY=${PREP_ONLY:-""}
+SAVE_PLOTS=${SAVE_PLOTS:-""}
 BATCH_SIZE=${BATCH_SIZE:-10}
 
 # ============================================================================
@@ -145,6 +146,7 @@ srun python run_bind_unified.py \
     $REPASTE \
     $DO_HYDRO_REPLACE \
     $RUN_ANALYSES \
+    $SAVE_PLOTS \
     $PREP_ONLY \
     $SIM_NUMS_ARG
 
