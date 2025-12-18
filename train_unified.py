@@ -1076,6 +1076,28 @@ Examples:
         n_params_inline
     )
     
+    # NEW: Halo mass conditioning - append log10(halo_mass) to parameters
+    include_halo_mass = cfg.get_bool('include_halo_mass', False)
+    if include_halo_mass:
+        # Halo mass bounds in log10(Msun): 10^13 to 10^15
+        halo_mass_min = cfg.get_float('halo_mass_min', 13.0)  # log10(10^13)
+        halo_mass_max = cfg.get_float('halo_mass_max', 15.0)  # log10(10^15)
+        
+        if min_vals is not None and max_vals is not None:
+            # Append halo mass bounds to existing parameters
+            min_vals = np.append(min_vals, halo_mass_min)
+            max_vals = np.append(max_vals, halo_mass_max)
+            n_params += 1
+            print(f"📊 Halo mass conditioning: ENABLED (log10 range [{halo_mass_min}, {halo_mass_max}])")
+            print(f"   → Total parameters: {n_params} (35 cosmology + 1 halo mass)")
+        else:
+            # Create new arrays with just halo mass
+            min_vals = np.array([halo_mass_min])
+            max_vals = np.array([halo_mass_max])
+            n_params = 1
+            use_param_conditioning = True
+            print(f"📊 Halo mass conditioning: ENABLED (halo mass only, log10 range [{halo_mass_min}, {halo_mass_max}])")
+    
     # Training parameters
     max_epochs = cfg.get_int('max_epochs', 100)
     limit_train_batches = cfg.get_float('limit_train_batches', 1.0)
@@ -1151,6 +1173,10 @@ Examples:
         stellar_stats_path = cfg.get_optional('stellar_stats_path')
         if stellar_stats_path:
             datamodule_kwargs['stellar_stats_path'] = stellar_stats_path
+    
+    # NEW: Pass include_halo_mass to datamodule
+    if include_halo_mass:
+        datamodule_kwargs['include_halo_mass'] = True
     
     datamodule = get_astro_data(**datamodule_kwargs)
     

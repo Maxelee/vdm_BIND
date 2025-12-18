@@ -576,6 +576,16 @@ def initialize_clean(config, verbose=False, skip_data_loading=False):
 			param_max = np.array(minmax_df['MaxVal'].values)
 			if verbose_flag:
 				print(f"[ModelManager] Loaded {len(param_min)} param bounds from {param_norm_path}")
+			
+			# If halo mass conditioning is enabled, append halo mass bounds
+			if getattr(config, 'include_halo_mass', False):
+				halo_mass_min = getattr(config, 'halo_mass_min', 13.0)
+				halo_mass_max = getattr(config, 'halo_mass_max', 15.0)
+				param_min = np.append(param_min, halo_mass_min)
+				param_max = np.append(param_max, halo_mass_max)
+				if verbose_flag:
+					print(f"[ModelManager] Appended halo mass bounds: [{halo_mass_min}, {halo_mass_max}]")
+					print(f"[ModelManager] Total params: {len(param_min)}")
 		else:
 			if verbose_flag:
 				print(f"[ModelManager] WARNING: param_norm_path not found: {param_norm_path}")

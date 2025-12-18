@@ -241,6 +241,32 @@ class ConfigLoader:
             self.min = np.array(minmax_df['MinVal'].values)
             self.max = np.array(minmax_df['MaxVal'].values)
             self.Nparams = len(self.min)
+        
+        # ✅ HALO MASS CONDITIONING SUPPORT
+        # If include_halo_mass is enabled, model expects log10(halo_mass) as additional parameter
+        self.include_halo_mass = False
+        if 'include_halo_mass' in params:
+            self.include_halo_mass = params['include_halo_mass'].lower() in ('true', '1', 'yes')
+        
+        if self.include_halo_mass:
+            # Get halo mass bounds (in log10 Msun)
+            self.halo_mass_min = float(params.get('halo_mass_min', '13.0'))
+            self.halo_mass_max = float(params.get('halo_mass_max', '15.0'))
+            
+            # Append halo mass bounds to param arrays
+            if hasattr(self, 'min') and hasattr(self, 'max'):
+                self.min = np.append(self.min, self.halo_mass_min)
+                self.max = np.append(self.max, self.halo_mass_max)
+                self.Nparams += 1
+                self._verbosity.vprint_summary(f"[ConfigLoader] 📊 Halo mass conditioning enabled: log10 range [{self.halo_mass_min}, {self.halo_mass_max}]")
+                self._verbosity.vprint_summary(f"[ConfigLoader]    → Total parameters: {self.Nparams}")
+            else:
+                # Create param arrays with just halo mass
+                self.min = np.array([self.halo_mass_min])
+                self.max = np.array([self.halo_mass_max])
+                self.Nparams = 1
+                self.use_param_conditioning = True
+                self._verbosity.vprint_summary(f"[ConfigLoader] 📊 Halo mass conditioning enabled (halo mass only)")
 
         # ✅ QUANTILE NORMALIZATION SUPPORT
         # Load quantile_path if specified (for stellar channel normalization)

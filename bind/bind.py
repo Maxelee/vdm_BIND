@@ -541,7 +541,7 @@ class BIND:
     
     def generate_halos(self, batch_size: int = 10, conditional_params: np.ndarray = None, 
                       cleanup_conditions: bool = True, use_large_scale: bool = None,
-                      conserve_mass: bool = True) -> List:
+                      conserve_mass: bool = True, n_sampling_steps: int = 250) -> List:
         """
         Generate halos using the diffusion model.
         
@@ -551,6 +551,7 @@ class BIND:
             cleanup_conditions (bool): If True, delete individual halo_*.npz files after generation.
             use_large_scale (bool): Whether to use large-scale conditioning. If None, auto-detect from extracted data.
             conserve_mass (bool): If True, normalize generated halos so total mass (DM+Gas+Stars) equals DMO cutout mass.
+        n_sampling_steps (int): Number of sampling steps for the diffusion model.
         
         Returns:
             List: Generated halo images.
@@ -618,6 +619,27 @@ class BIND:
         
         conditional_params = torch.tensor(conditional_params, dtype=torch.float32).to(self.device) if conditional_params is not None else None
         
+        # ✅ HALO MASS CONDITIONING: Append log10(halo_mass) to conditional_params if enabled
+        if getattr(config, 'include_halo_mass', False):
+            # Get halo masses from extracted metadata
+            halo_masses = np.array([meta['mass'] for meta in self.extracted['metadata']])
+            log_halo_masses = np.log10(np.maximum(halo_masses, 1e10))  # Floor to avoid log(0)
+            
+            if self.verbose:
+                print(f"[BIND] 📊 Halo mass conditioning enabled:")
+                print(f"[BIND]    Halo masses: {halo_masses.min():.2e} - {halo_masses.max():.2e} Msun")
+                print(f"[BIND]    Log10 masses: {log_halo_masses.min():.2f} - {log_halo_masses.max():.2f}")
+            
+            # Expand to match number of halos: (N_halos, 1)
+            log_halo_masses_tensor = torch.tensor(log_halo_masses, dtype=torch.float32).unsqueeze(1).to(self.device)
+            
+            if conditional_params is not None:
+                # Append halo mass to existing params: (N, n_params) -> (N, n_params+1)
+                conditional_params = torch.cat([conditional_params, log_halo_masses_tensor], dim=1)
+            else:
+                # Create new params with just halo mass: (N, 1)
+                conditional_params = log_halo_masses_tensor
+        
         # Extract DMO cutouts for mass normalization if needed
         dmo_cutouts = []
         if conserve_mass:
@@ -635,7 +657,7 @@ class BIND:
                     dmo_cutout /= omega_m
                 dmo_cutouts.append(dmo_cutout)
         
-        generated_samples = sample(vdm_model, conditions, batch_size=batch_size, conditional_params=conditional_params)
+        generated_samples = sample(vdm_model, conditions, batch_size=batch_size, conditional_params=conditional_params, n_sampling_steps=n_sampling_steps)
         print(generated_samples.shape)
         generated_halos = []
         for i in range(len(generated_samples)):

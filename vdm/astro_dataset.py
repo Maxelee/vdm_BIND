@@ -14,17 +14,19 @@ from .augmentation import Translate, Permutate, Flip, Normalize, Resize, RandomR
 from .constants import norms_256 as norms
 
 class AstroDataset(TensorDataset):
-    def __init__(self, file_paths, transform=None):  # Add halo_mass parameters
+    def __init__(self, file_paths, transform=None, include_halo_mass=False):
         """
         Args:
             file_paths: List of file paths to data
             transform: Data transformations
-            field: Field to use (for compatibility)
-            use_omega_m: Whether to include Omega_m conditioning
-            omega_m_value: Fixed Omega_m value or function to generate it
+            include_halo_mass: If True, append log10(halo_mass) to the conditions array.
+                              This adds halo mass as an explicit conditioning input.
         """
         self.file_paths = file_paths
         self.transform = transform
+        self.include_halo_mass = include_halo_mass
+        if include_halo_mass:
+            print("📊 AstroDataset: Including halo mass as conditioning parameter")
         
 
     def __len__(self):
@@ -42,6 +44,13 @@ class AstroDataset(TensorDataset):
                 large_scale = data['large_scale']
                 if large_scale.shape[0] == 4:
                     large_scale = large_scale[1:]
+                
+                # Optionally append log10(halo_mass) to conditions
+                if self.include_halo_mass and 'halo_mass' in data:
+                    halo_mass = float(data['halo_mass'])
+                    # Log-transform halo mass (masses are in Msun, typically 10^13 - 10^15)
+                    log_halo_mass = np.log10(max(halo_mass, 1e10))  # Floor to avoid log(0)
+                    conditions = np.append(conditions, log_halo_mass)
                 
                 # # Normalize large_scale - handle both (H, W) and (N, H, W) cases
                 # if large_scale.ndim == 2:
@@ -153,6 +162,7 @@ class AstroDataModule(LightningDataModule):
             data_root = '/mnt/home/mlee1/ceph/50Mpc_boxes/subimages/snapdir_090',
             limit_train_samples=None,  # NEW: Limit training samples for fast ablation
             limit_val_samples=None,    # NEW: Limit validation samples
+            include_halo_mass=False,   # NEW: Include halo mass as conditioning parameter
         ):
         super().__init__()
         self.train_transforms = train_transforms
@@ -163,6 +173,7 @@ class AstroDataModule(LightningDataModule):
         self.data_root = data_root
         self.limit_train_samples = limit_train_samples
         self.limit_val_samples = limit_val_samples
+        self.include_halo_mass = include_halo_mass
 
 
     def setup(self, stage=None):
@@ -187,7 +198,8 @@ class AstroDataModule(LightningDataModule):
 
             data = AstroDataset(
                 self.all_files, 
-                transform=self.train_transforms, 
+                transform=self.train_transforms,
+                include_halo_mass=self.include_halo_mass,
             )
             train_set_size = int(total * 0.8)
             valid_set_size = total - train_set_size
@@ -209,7 +221,8 @@ class AstroDataModule(LightningDataModule):
 
             self.test_data = AstroDataset(
                 self.all_files, 
-                transform=self.test_transforms, 
+                transform=self.test_transforms,
+                include_halo_mass=self.include_halo_mass,
             )
 
     def train_dataloader(self):
@@ -373,6 +386,7 @@ def get_astro_data(
     limit_val_samples=None,
     stellar_stats_path='/mnt/home/mlee1/vdm_BIND/data/stellar_normalization_stats.npz',  # Z-score normalization
     quantile_path=None,  # Quantile normalization (alternative to stellar_stats_path)
+    include_halo_mass=False,  # NEW: Include log10(halo_mass) as conditioning parameter
 ):
     """
     Get astro data with optional sample limiting for fast ablation studies
@@ -393,6 +407,8 @@ def get_astro_data(
         limit_val_samples: Limit validation samples (e.g., 500 for faster epochs)
         stellar_stats_path: Path to stellar Z-score normalization stats
         quantile_path: Path to quantile transformer .pkl (alternative to stellar_stats_path)
+        include_halo_mass: If True, append log10(halo_mass) to conditioning params.
+                          Requires updating param_min/param_max to include halo mass bounds.
     """
     # Create transforms with stellar normalization (Z-score OR quantile)
     train_transforms = [
@@ -427,6 +443,7 @@ def get_astro_data(
         data_root=data_root,
         limit_train_samples=limit_train_samples,
         limit_val_samples=limit_val_samples,
+        include_halo_mass=include_halo_mass,
     )
     dm.setup(stage=stage)
     return dm

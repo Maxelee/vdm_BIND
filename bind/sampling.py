@@ -54,7 +54,11 @@ def sample(vdm, conditions, batch_size=1, conditional_params=None, n_sampling_st
             cond_expanded = cond.unsqueeze(0).expand(batch_size, -1, -1, -1).to('cuda')
 
         if conditional_params is not None:
-            param_row = torch.tensor(conditional_params[i], dtype=torch.float32, device='cuda')
+            # Handle both tensor and array inputs
+            if isinstance(conditional_params, torch.Tensor):
+                param_row = conditional_params[i].to('cuda')
+            else:
+                param_row = torch.tensor(conditional_params[i], dtype=torch.float32, device='cuda')
             param_expanded = param_row.unsqueeze(0).expand(batch_size, -1).to('cuda')
         else:
             param_expanded = None

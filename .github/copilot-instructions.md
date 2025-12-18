@@ -159,6 +159,16 @@ The model uses multi-scale context (6.25, 12.5, 25.0, 50.0 Mpc/h scales):
 - `large_scale_channels=3`: Additional 3 large-scale context maps
 - Total input channels = 1 + large_scale_channels (auto-detected from checkpoint)
 
+### Halo Mass Conditioning (Optional)
+Models can be trained with halo mass as an additional conditioning parameter:
+- Enable via `include_halo_mass = True` in config
+- Halo mass is log10-transformed and normalized to [0,1]
+- Config params: `halo_mass_min = 13.0`, `halo_mass_max = 15.0` (log10 Msun)
+- Increases `n_params` from 35 → 36
+- During BIND inference, halo masses are automatically extracted and appended
+
+This helps the model generalize to different halo mass distributions (e.g., training on SB35, testing on CV which has ~3x more massive halos).
+
 ## Code Conventions
 
 ### Configuration Files (`configs/*.ini`)
@@ -313,6 +323,8 @@ python train_unified.py --model MODEL_TYPE --config configs/CONFIG.ini
 | Model | Config File |
 |-------|-------------|
 | VDM (3-channel) | `configs/clean_vdm_aggressive_stellar.ini` |
+| VDM + Halo Mass | `configs/clean_vdm_halo_mass.ini` |
+| VDM + Bijective Loss | `configs/clean_vdm_regularized_bijective.ini` |
 | Triple VDM | `configs/clean_vdm_triple.ini` |
 | DDPM | `configs/ddpm.ini` |
 | DSM | `configs/dsm.ini` |
