@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
-from .workflow_utils import ConfigLoader, ModelManager, sample
+
+# Use new modular imports
+from .config_loader import ConfigLoader, load_normalization_stats
+from .model_manager import ModelManager
+from .sampling import sample
+
 from vdm.constants import norms_256 as norms
 import MAS_library as MASL
 
@@ -92,8 +97,7 @@ class BIND:
         self.paste_gridsize = self.gridsize  # No resizing, use original gridsize
         
         # Load normalization stats from .npz files (matches training data)
-        # These files are in the project root
-        from .workflow_utils import load_normalization_stats
+        # load_normalization_stats is already imported at module level
         norm_stats = load_normalization_stats()  # Uses project root by default
         
         # Set normalization parameters

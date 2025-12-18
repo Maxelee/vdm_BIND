@@ -530,7 +530,8 @@ def create_multi_seed_ensemble(
         ModelEnsemble with models from different seeds
     """
     from pathlib import Path
-    from bind.workflow_utils import ConfigLoader, ModelManager
+    from bind.config_loader import ConfigLoader
+    from bind.model_manager import ModelManager
     
     checkpoint_dir = Path(checkpoint_dir)
     models = []

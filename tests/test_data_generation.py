@@ -128,7 +128,7 @@ class TestNormalizationConsistency:
     
     def test_normalization_roundtrip(self):
         """Test that normalization can be reversed correctly."""
-        from bind.workflow_utils import load_normalization_stats
+        from bind.config_loader import load_normalization_stats
         
         stats = load_normalization_stats()
         
@@ -289,7 +289,7 @@ class TestTrainingInferenceConsistency:
         # Training data format: condition (1 ch) + large_scale (3 ch) = 4 total
         # Or: condition (1 ch) + large_scale (0 ch) = 1 total
         
-        from bind.workflow_utils import ConfigLoader
+        from bind.config_loader import ConfigLoader
         from config import PROJECT_ROOT
         from pathlib import Path
         

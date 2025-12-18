@@ -551,8 +551,10 @@ Examples:
         if not Path(args.config).exists():
             raise FileNotFoundError(f"Config file not found: {args.config}")
     
-    # Import BIND components
-    from bind.workflow_utils import ConfigLoader, ModelManager, load_normalization_stats, sample
+    # Import BIND components (use new modular imports)
+    from bind.config_loader import ConfigLoader, load_normalization_stats
+    from bind.model_manager import ModelManager
+    from bind.sampling import sample
     
     config = ConfigLoader(args.config, verbose=args.verbose)
     

@@ -15,7 +15,7 @@ class TestNormalizationStats:
     
     def test_load_normalization_stats(self):
         """Should load all normalization stats."""
-        from bind.workflow_utils import load_normalization_stats
+        from bind.config_loader import load_normalization_stats
         
         stats = load_normalization_stats()
         
@@ -29,7 +29,7 @@ class TestNormalizationStats:
     
     def test_normalization_values_reasonable(self):
         """Normalization values should be in expected ranges."""
-        from bind.workflow_utils import load_normalization_stats
+        from bind.config_loader import load_normalization_stats
         
         stats = load_normalization_stats()
         
@@ -91,7 +91,7 @@ param_norm_path =
     
     def test_config_loader_basic(self, sample_config_path):
         """ConfigLoader should parse config correctly."""
-        from bind.workflow_utils import ConfigLoader
+        from bind.config_loader import ConfigLoader
         
         config = ConfigLoader(sample_config_path, verbose=False)
         
@@ -107,7 +107,7 @@ param_norm_path =
     
     def test_config_loader_channel_weights(self, sample_config_path):
         """ConfigLoader should parse channel weights string."""
-        from bind.workflow_utils import ConfigLoader
+        from bind.config_loader import ConfigLoader
         
         config = ConfigLoader(sample_config_path, verbose=False)
         
@@ -231,7 +231,7 @@ focal_gamma = 2.5
     
     def test_int_params_parsed_correctly(self, minimal_config_path):
         """Integer parameters should be parsed as int."""
-        from bind.workflow_utils import ConfigLoader
+        from bind.config_loader import ConfigLoader
         
         config = ConfigLoader(minimal_config_path)
         
@@ -242,7 +242,7 @@ focal_gamma = 2.5
     
     def test_float_params_parsed_correctly(self, minimal_config_path):
         """Float parameters should be parsed as float."""
-        from bind.workflow_utils import ConfigLoader
+        from bind.config_loader import ConfigLoader
         
         config = ConfigLoader(minimal_config_path)
         
@@ -253,7 +253,7 @@ focal_gamma = 2.5
     
     def test_bool_params_parsed_correctly(self, minimal_config_path):
         """Boolean parameters should be parsed as bool."""
-        from bind.workflow_utils import ConfigLoader
+        from bind.config_loader import ConfigLoader
         
         config = ConfigLoader(minimal_config_path)
         
@@ -262,7 +262,7 @@ focal_gamma = 2.5
     
     def test_per_channel_data_noise(self, minimal_config_path):
         """Per-channel data_noise should be parsed as tuple."""
-        from bind.workflow_utils import ConfigLoader
+        from bind.config_loader import ConfigLoader
         
         config = ConfigLoader(minimal_config_path)
         
@@ -272,7 +272,7 @@ focal_gamma = 2.5
     
     def test_natural_sort_key(self):
         """Natural sort key should sort numbers correctly."""
-        from bind.workflow_utils import ConfigLoader
+        from bind.config_loader import ConfigLoader
         
         test_strings = ['epoch_2', 'epoch_10', 'epoch_1', 'epoch_100']
         sorted_strings = sorted(test_strings, key=ConfigLoader._natural_sort_key)
@@ -285,7 +285,7 @@ class TestLoadNormalizationStats:
     
     def test_load_from_default_path(self):
         """Should load from default path when no path provided."""
-        from bind.workflow_utils import load_normalization_stats
+        from bind.config_loader import load_normalization_stats
         
         stats = load_normalization_stats()
         
@@ -298,7 +298,7 @@ class TestLoadNormalizationStats:
     
     def test_stats_are_floats(self):
         """All stats should be float values."""
-        from bind.workflow_utils import load_normalization_stats
+        from bind.config_loader import load_normalization_stats
         
         stats = load_normalization_stats()
         
@@ -307,7 +307,7 @@ class TestLoadNormalizationStats:
     
     def test_missing_file_raises(self, tmp_path):
         """Should raise FileNotFoundError for missing files."""
-        from bind.workflow_utils import load_normalization_stats
+        from bind.config_loader import load_normalization_stats
         
         with pytest.raises(FileNotFoundError):
             load_normalization_stats(base_path=str(tmp_path))
