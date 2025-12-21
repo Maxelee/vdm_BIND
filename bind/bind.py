@@ -208,10 +208,13 @@ class BIND:
             masses = f['Group/Group_M_Crit200'][:]
             radii = f['Group/Group_R_Crit200'][:]
         
-        mask = masses * 1e10 >= self.mass_threshold
+        # Convert masses from 10^10 M_sun/h to M_sun/h (to match training data)
+        masses_msun = masses * 1e10
+        
+        mask = masses_msun >= self.mass_threshold
         self.halo_catalog = {
             'positions': positions[mask],
-            'masses': masses[mask],
+            'masses': masses_msun[mask],  # Store in M_sun/h units
             'radii': radii[mask],
             'indices': np.where(mask)[0]
         }
@@ -621,14 +624,25 @@ class BIND:
         
         # ✅ HALO MASS CONDITIONING: Append log10(halo_mass) to conditional_params if enabled
         if getattr(config, 'include_halo_mass', False):
-            # Get halo masses from extracted metadata
+            # Get halo masses from extracted metadata (already in M_sun/h from load_halo_catalog)
             halo_masses = np.array([meta['mass'] for meta in self.extracted['metadata']])
             log_halo_masses = np.log10(np.maximum(halo_masses, 1e10))  # Floor to avoid log(0)
             
+            # Get normalization bounds from config
+            halo_mass_min = getattr(config, 'halo_mass_min', 13.0)
+            halo_mass_max = getattr(config, 'halo_mass_max', 15.0)
+            
             if self.verbose:
                 print(f"[BIND] 📊 Halo mass conditioning enabled:")
-                print(f"[BIND]    Halo masses: {halo_masses.min():.2e} - {halo_masses.max():.2e} Msun")
+                print(f"[BIND]    Halo masses: {halo_masses.min():.2e} - {halo_masses.max():.2e} M_sun/h")
                 print(f"[BIND]    Log10 masses: {log_halo_masses.min():.2f} - {log_halo_masses.max():.2f}")
+                print(f"[BIND]    Config range: [{halo_mass_min}, {halo_mass_max}] (log10 M_sun)")
+                
+                # Check if any masses are outside the training range
+                n_below = np.sum(log_halo_masses < halo_mass_min)
+                n_above = np.sum(log_halo_masses > halo_mass_max)
+                if n_below > 0 or n_above > 0:
+                    print(f"[BIND] ⚠️  Warning: {n_below} halos below, {n_above} halos above training range")
             
             # Expand to match number of halos: (N_halos, 1)
             log_halo_masses_tensor = torch.tensor(log_halo_masses, dtype=torch.float32).unsqueeze(1).to(self.device)
