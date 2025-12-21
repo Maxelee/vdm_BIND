@@ -535,6 +535,8 @@ def create_vdm_model(cfg, min_vals, max_vals, use_param_conditioning):
         focal_gamma=cfg.get_float('focal_gamma', 2.0),
         use_param_prediction=cfg.get_bool('use_param_prediction', False),
         param_prediction_weight=cfg.get_float('param_prediction_weight', 0.01),
+        use_baryon_fraction_loss=cfg.get_bool('use_baryon_fraction_loss', False),
+        baryon_fraction_weight=cfg.get_float('baryon_fraction_weight', 0.1),
     )
     
     return model, 'val/elbo'
