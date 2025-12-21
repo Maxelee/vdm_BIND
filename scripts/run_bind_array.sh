@@ -49,8 +49,8 @@ source /mnt/home/mlee1/venvs/torch3/bin/activate
 
 # Suite and Model Configuration
 SUITE=${SUITE:-"cv"}  # cv, sb35, or 1p
-MODEL_NAME=${MODEL_NAME:-"clean_vdm_regularized"}
-CONFIG_PATH=${CONFIG_PATH:-"/mnt/home/mlee1/vdm_BIND/configs/clean_vdm_regularized.ini"}
+MODEL_NAME=${MODEL_NAME:-"clean_vdm_regularized_bijective"}
+CONFIG_PATH=${CONFIG_PATH:-"/mnt/home/mlee1/vdm_BIND/configs/clean_vdm_regularized_bijective.ini"}
 
 # Output Configuration
 BASE_OUTPATH=${BASE_OUTPATH:-"/mnt/home/mlee1/ceph/BIND2d_new"}

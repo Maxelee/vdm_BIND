@@ -361,31 +361,28 @@ class CleanVDM(nn.Module):
         x: Tensor,
         gamma_t: Tensor,
         param_conditioning: Optional[Tensor] = None,
+        x_t: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Dict[str, float]]:
         """
-        Compute baryon fraction auxiliary loss.
+        Compute baryon fraction auxiliary loss on MODEL PREDICTIONS.
         
-        This loss encourages the predicted Gas/DM ratio to match the expected
-        cosmic baryon fraction f_b = Ω_b/Ω_m. The key insight is that at low
-        noise levels (high SNR), the model's prediction should reflect the
-        correct cosmology.
+        This loss encourages the PREDICTED Gas/DM ratio to correlate with 
+        cosmic baryon fraction f_b = Ω_b/Ω_m. 
         
-        For 3-channel predictions [DM, Gas, Stars]:
-        - Channel 0: DM
-        - Channel 1: Gas
-        - Expected ratio: Gas/DM ∝ f_b = Ω_b/Ω_m
-        
-        The loss penalizes deviation from the expected ratio when:
-        1. We can estimate the clean prediction from noisy output
-        2. The cosmological parameters are available
+        Key design choices:
+        1. Only compute at LOW noise levels (SNR > threshold) where predictions
+           are meaningful. At high noise, the denoised estimate is garbage.
+        2. Use correlation/ranking loss rather than MSE - we care that high f_b
+           cosmologies produce higher Gas/DM ratios, not the exact values.
+        3. Compare PREDICTED denoised output vs cosmic f_b, not ground truth.
         
         Args:
             pred_noise: Model's noise prediction (B, C, H, W)
             true_noise: Actual noise that was added (B, C, H, W)
-            x: Clean data (B, C, H, W)
+            x: Clean data (B, C, H, W)  
             gamma_t: Log SNR values (B, 1, 1, 1)
             param_conditioning: Optional parameter conditioning (B, N_params)
-                                Expects Omega_m at index 0, Omega_b at index 6
+            x_t: Noisy data (B, C, H, W) - needed to compute denoised estimate
         
         Returns:
             Baryon fraction loss (scalar)
@@ -394,74 +391,101 @@ class CleanVDM(nn.Module):
         metrics = {}
         
         if param_conditioning is None or x.shape[1] < 2:
-            # Can't compute baryon fraction without params or without DM+Gas channels
             return torch.tensor(0.0, device=x.device), metrics
         
-        # Extract cosmological parameters
-        # params[:, 0] = Omega_m, params[:, 6] = Omega_b (based on CAMELS convention)
-        # Note: params are normalized to [0, 1], so we need to denormalize
-        if hasattr(self.score_model, 'param_conditioning_embedding'):
-            param_min = self.score_model.param_conditioning_embedding.min.to(param_conditioning.device)
-            param_max = self.score_model.param_conditioning_embedding.max.to(param_conditioning.device)
+        # === Only apply loss at low noise levels (high SNR) ===
+        # gamma_t = log(SNR), so high gamma = low noise
+        # SNR > 1 means gamma > 0
+        snr = self.get_snr(gamma_t)  # (B, 1, 1, 1)
+        snr_flat = snr.squeeze()  # (B,)
+        
+        # Only use samples with SNR > 4 (gamma > ~1.4)
+        # This ensures predictions are meaningful
+        snr_threshold = 4.0
+        high_snr_mask = snr_flat > snr_threshold
+        
+        n_high_snr = high_snr_mask.sum().item()
+        metrics['baryon_n_samples'] = n_high_snr
+        
+        if n_high_snr < 4:
+            # Not enough low-noise samples to compute meaningful correlation
+            metrics['baryon_fb_mean'] = 0.0
+            metrics['baryon_ratio_pred_mean'] = 0.0
+            metrics['baryon_correlation'] = 0.0
+            return torch.tensor(0.0, device=x.device), metrics
+        
+        # === Extract cosmological parameters ===
+        # Try to get param bounds from the model's embedding layer
+        param_embed = getattr(self.score_model, 'param_conditioning_embedding', None)
+        if param_embed is not None and hasattr(param_embed, 'min') and param_embed.min is not None:
+            param_min = param_embed.min.to(param_conditioning.device)
+            param_max = param_embed.max.to(param_conditioning.device)
             
-            # Denormalize: params_raw = params_norm * (max - min) + min
-            omega_m_norm = param_conditioning[:, 0]  # Already normalized
-            
-            # Omega_b may be at different index - check param names
-            # For CAMELS SB35: Omega_b is typically at index 6
+            omega_m_norm = param_conditioning[:, 0]
             omega_b_idx = 6 if param_conditioning.shape[1] > 6 else 1
             omega_b_norm = param_conditioning[:, omega_b_idx]
             
-            # Denormalize
             omega_m = omega_m_norm * (param_max[0] - param_min[0]) + param_min[0]
             omega_b = omega_b_norm * (param_max[omega_b_idx] - param_min[omega_b_idx]) + param_min[omega_b_idx]
         else:
-            # Fallback: assume fiducial CAMELS cosmology
-            omega_m = torch.full((x.shape[0],), 0.3, device=x.device)
-            omega_b = torch.full((x.shape[0],), 0.049, device=x.device)
+            # Params are already normalized to [0, 1], assume CAMELS ranges:
+            # Omega_m: [0.1, 0.5], Omega_b: [0.03, 0.07]
+            omega_m_norm = param_conditioning[:, 0]
+            omega_b_idx = 6 if param_conditioning.shape[1] > 6 else 1
+            omega_b_norm = param_conditioning[:, omega_b_idx]
+            
+            # Denormalize using typical CAMELS ranges
+            omega_m = omega_m_norm * (0.5 - 0.1) + 0.1  # [0.1, 0.5]
+            omega_b = omega_b_norm * (0.07 - 0.03) + 0.03  # [0.03, 0.07]
         
-        # Compute cosmic baryon fraction
         cosmic_fb = omega_b / (omega_m + 1e-8)  # (B,)
         
-        # Compute alpha and sigma for denoising estimate
-        alpha_t = self.alpha(gamma_t)  # (B, 1, 1, 1)
-        sigma_t = self.sigma(gamma_t)
+        # === Compute PREDICTED denoised estimate ===
+        if x_t is not None:
+            # x_hat = (x_t - sigma * pred_noise) / alpha
+            alpha_t = self.alpha(gamma_t)
+            sigma_t = self.sigma(gamma_t)
+            x_pred = (x_t - sigma_t * pred_noise) / (alpha_t + 1e-8)
+        else:
+            # Fallback: use ground truth (but this defeats the purpose)
+            x_pred = x
         
-        # Estimate clean prediction: x_hat = (z_t - sigma_t * pred_noise) / alpha_t
-        # But we have the true x, so we compare the predicted denoised vs true
+        # Compute predicted Gas/DM ratio
+        # Apply same transform as data: the predictions are in normalized space,
+        # but the ratio should be scale-invariant
+        dm_pred = x_pred[:, 0].sum(dim=(1, 2))  # (B,)
+        gas_pred = x_pred[:, 1].sum(dim=(1, 2))  # (B,)
+        pred_ratio = gas_pred / (dm_pred.abs() + 1e-8)
         
-        # Compute ratio from TRUE data (target for the loss)
-        dm_mass_true = x[:, 0].sum(dim=(1, 2))  # (B,)
-        gas_mass_true = x[:, 1].sum(dim=(1, 2))  # (B,)
-        true_ratio = gas_mass_true / (dm_mass_true + 1e-8)
+        # Filter to high-SNR samples only
+        pred_ratio_filtered = pred_ratio[high_snr_mask]
+        cosmic_fb_filtered = cosmic_fb[high_snr_mask]
         
-        # The expected ratio in halos is less than cosmic f_b due to feedback
-        # Typical halo baryon retention fraction is ~30-50% for massive halos
-        # We use a soft constraint that the ratio should scale with f_b
+        # === Soft ranking loss (differentiable correlation) ===
+        # Encourage correlation: samples with higher f_b should have higher Gas/DM
+        # Use soft ranking via standardization + cosine similarity
         
-        # Compute predicted ratio using noise prediction quality as proxy
-        # At convergence, pred_noise ≈ true_noise, so we measure the correlation
-        # between the predicted denoising and the true ratio
+        # Standardize both to have mean=0, std=1
+        pred_std = (pred_ratio_filtered - pred_ratio_filtered.mean()) / (pred_ratio_filtered.std() + 1e-8)
+        fb_std = (cosmic_fb_filtered - cosmic_fb_filtered.mean()) / (cosmic_fb_filtered.std() + 1e-8)
         
-        # Alternative approach: directly constrain that predicted ratios 
-        # should correlate with cosmological f_b
+        # Negative correlation loss: higher correlation = lower loss
+        # correlation = E[pred_std * fb_std]
+        correlation = (pred_std * fb_std).mean()
         
-        # Loss: MSE between (true_ratio / mean_true_ratio) and (cosmic_fb / mean_cosmic_fb)
-        # This encourages the model to learn the cosmology → ratio relationship
+        # Loss = 1 - correlation (so perfect correlation → loss = 0)
+        baryon_loss = 1.0 - correlation
         
-        # Normalize both to mean=1 for scale-invariance
-        true_ratio_normalized = true_ratio / (true_ratio.mean() + 1e-8)
-        cosmic_fb_normalized = cosmic_fb / (cosmic_fb.mean() + 1e-8)
+        # Also add a small MSE term to encourage correct magnitude
+        # But much smaller than correlation term
+        mse_term = mse_loss(pred_std, fb_std, reduction='mean') * 0.1
+        baryon_loss = baryon_loss + mse_term
         
-        # MSE loss between normalized ratios
-        baryon_loss = mse_loss(true_ratio_normalized, cosmic_fb_normalized, reduction='mean')
-        
-        # Compute additional monitoring metrics
+        # Monitoring metrics
         metrics['baryon_fb_mean'] = cosmic_fb.mean().item()
-        metrics['baryon_ratio_true_mean'] = true_ratio.mean().item()
-        metrics['baryon_correlation'] = torch.corrcoef(
-            torch.stack([true_ratio, cosmic_fb])
-        )[0, 1].item() if len(true_ratio) > 1 else 0.0
+        metrics['baryon_ratio_pred_mean'] = pred_ratio[high_snr_mask].mean().item() if n_high_snr > 0 else 0.0
+        metrics['baryon_correlation'] = correlation.item()
+        metrics['baryon_snr_mean'] = snr_flat[high_snr_mask].mean().item() if n_high_snr > 0 else 0.0
         
         return baryon_loss, metrics
     
@@ -681,6 +705,7 @@ class CleanVDM(nn.Module):
                 x=x,
                 gamma_t=gamma_t,
                 param_conditioning=param_conditioning,
+                x_t=x_t,  # Pass noisy data for denoised prediction
             )
             baryon_loss = self.baryon_fraction_weight * baryon_loss
         
