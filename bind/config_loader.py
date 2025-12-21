@@ -125,7 +125,7 @@ class ConfigLoader:
                       'patch_size', 'hidden_size', 'depth', 'num_heads', 'warmup_steps', 'max_epochs'}
         float_params = {'gamma_min', 'gamma_max', 'learning_rate', 'mass_conservation_weight',
                         'sparsity_threshold', 'sparse_loss_weight', 'focal_alpha', 'focal_gamma',
-                        'param_prediction_weight', 'cross_attention_dropout',
+                        'param_prediction_weight', 'cross_attention_dropout', 'baryon_fraction_weight',
                         # DDPM/score_models parameters
                         'beta_min', 'beta_max', 'sigma_min', 'sigma_max', 'ema_decay', 'dropout',
                         # DiT parameters
@@ -135,6 +135,7 @@ class ConfigLoader:
                        'use_sparsity_aware_loss', 'use_focal_loss', 'use_param_prediction', 
                        'use_auxiliary_mask', 'antithetic_time_sampling', 'use_cross_attention',
                        'use_chunked_cross_attention', 'downsample_cross_attn_cond',
+                       'use_baryon_fraction_loss',
                        # DDPM/score_models parameters
                        'use_param_conditioning', 'attention', 'enable_ema', 'enable_early_stopping',
                        'enable_gradient_monitoring',
@@ -188,6 +189,12 @@ class ConfigLoader:
             self.antithetic_time_sampling = True
         if not hasattr(self, 'add_attention'):
             self.add_attention = True
+        
+        # Set defaults for baryon fraction loss (cosmology-aware auxiliary loss)
+        if not hasattr(self, 'use_baryon_fraction_loss'):
+            self.use_baryon_fraction_loss = False
+        if not hasattr(self, 'baryon_fraction_weight'):
+            self.baryon_fraction_weight = 0.0
         
         # Set defaults for cross-attention parameters (networks_clean.py)
         if not hasattr(self, 'use_cross_attention'):

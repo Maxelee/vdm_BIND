@@ -666,6 +666,9 @@ def initialize_clean(config, verbose=False, skip_data_loading=False):
 		focal_gamma=getattr(config, 'focal_gamma', 2.0),
 		use_param_prediction=getattr(config, 'use_param_prediction', False),
 		param_prediction_weight=getattr(config, 'param_prediction_weight', 0.01),
+		# Baryon fraction loss (cosmology-aware auxiliary loss)
+		use_baryon_fraction_loss=getattr(config, 'use_baryon_fraction_loss', False),
+		baryon_fraction_weight=getattr(config, 'baryon_fraction_weight', 0.0),
 	)
 
 	if verbose_flag:
