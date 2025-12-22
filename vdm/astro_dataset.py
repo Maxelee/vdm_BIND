@@ -14,19 +14,26 @@ from .augmentation import Translate, Permutate, Flip, Normalize, Resize, RandomR
 from .constants import norms_256 as norms
 
 class AstroDataset(TensorDataset):
-    def __init__(self, file_paths, transform=None, include_halo_mass=False):
+    def __init__(self, file_paths, transform=None, include_halo_mass=False, cosmo_norm=False):
         """
         Args:
             file_paths: List of file paths to data
             transform: Data transformations
             include_halo_mass: If True, append log10(halo_mass) to the conditions array.
                               This adds halo mass as an explicit conditioning input.
+            cosmo_norm: If True, divide fields by cosmological parameters BEFORE log transform.
+                       - DM condition, large_scale, target[0]: divide by Omega_m (param index 0)
+                       - target[1] (gas), target[2] (stars): divide by Omega_b (param index 6)
+                       This removes first-order cosmology dependence from the fields.
         """
         self.file_paths = file_paths
         self.transform = transform
         self.include_halo_mass = include_halo_mass
+        self.cosmo_norm = cosmo_norm
         if include_halo_mass:
             print("📊 AstroDataset: Including halo mass as conditioning parameter")
+        if cosmo_norm:
+            print("🌌 AstroDataset: Cosmological normalization ENABLED (dividing by Ω_m/Ω_b)")
         
 
     def __len__(self):
@@ -52,21 +59,20 @@ class AstroDataset(TensorDataset):
                     log_halo_mass = np.log10(max(halo_mass, 1e10))  # Floor to avoid log(0)
                     conditions = np.append(conditions, log_halo_mass)
                 
-                # # Normalize large_scale - handle both (H, W) and (N, H, W) cases
-                # if large_scale.ndim == 2:
-                #     large_scale /= conditions[0]
-                # elif large_scale.ndim == 3:
-                #     large_scale /= conditions[0]
-                # else:
-                #     raise ValueError(f"Unexpected large_scale shape: {large_scale.shape}")
-                
-                # m_dm /= conditions[0]
-                # m_target[0] /= conditions[0]
-                # m_target[1] /= conditions[6]
-                # m_target[2] /= conditions[6]
-                # conditions_mask = np.ones(35)
-                # conditions_mask[[0, 1, 6,7,8]] = 0
-                # conditions = conditions[conditions_mask==1]
+                # Cosmological normalization: divide by Omega_m/Omega_b BEFORE log transform
+                # This removes first-order cosmology dependence from the fields
+                if self.cosmo_norm:
+                    omega_m = conditions[0]  # Omega_m at index 0
+                    omega_b = conditions[6]  # Omega_b at index 6
+                    
+                    # Divide DM fields by Omega_m
+                    m_dm = m_dm / omega_m
+                    large_scale = large_scale / omega_m
+                    m_target[0] = m_target[0] / omega_m  # DM hydro channel
+                    
+                    # Divide baryonic fields by Omega_b
+                    m_target[1] = m_target[1] / omega_b  # Gas channel
+                    m_target[2] = m_target[2] / omega_b  # Stars channel
         except Exception as e:
             print(f"Skipping corrupted file: {self.file_paths[index]} ({e})")
             # Try next index (wrap around if at end)
@@ -163,6 +169,7 @@ class AstroDataModule(LightningDataModule):
             limit_train_samples=None,  # NEW: Limit training samples for fast ablation
             limit_val_samples=None,    # NEW: Limit validation samples
             include_halo_mass=False,   # NEW: Include halo mass as conditioning parameter
+            cosmo_norm=False,          # NEW: Divide fields by Omega_m/Omega_b before log transform
         ):
         super().__init__()
         self.train_transforms = train_transforms
@@ -174,6 +181,7 @@ class AstroDataModule(LightningDataModule):
         self.limit_train_samples = limit_train_samples
         self.limit_val_samples = limit_val_samples
         self.include_halo_mass = include_halo_mass
+        self.cosmo_norm = cosmo_norm
 
 
     def setup(self, stage=None):
@@ -200,6 +208,7 @@ class AstroDataModule(LightningDataModule):
                 self.all_files, 
                 transform=self.train_transforms,
                 include_halo_mass=self.include_halo_mass,
+                cosmo_norm=self.cosmo_norm,
             )
             train_set_size = int(total * 0.8)
             valid_set_size = total - train_set_size
@@ -223,6 +232,7 @@ class AstroDataModule(LightningDataModule):
                 self.all_files, 
                 transform=self.test_transforms,
                 include_halo_mass=self.include_halo_mass,
+                cosmo_norm=self.cosmo_norm,
             )
 
     def train_dataloader(self):
@@ -253,7 +263,8 @@ class AstroDataModule(LightningDataModule):
         )
 
 
-def astro_normalizations(dataset, stellar_stats_path=None, quantile_path=None):
+def astro_normalizations(dataset, stellar_stats_path=None, quantile_path=None, 
+                         dm_stats_path=None, gas_stats_path=None):
     """
     Create normalization transforms for astro data.
     
@@ -263,9 +274,11 @@ def astro_normalizations(dataset, stellar_stats_path=None, quantile_path=None):
         - Stars: Z-score normalized OR quantile transformed (if quantile_path provided)
     
     Args:
-        dataset: Dataset name (for DM/Gas normalization stats)
+        dataset: Dataset name (for DM/Gas normalization stats fallback)
         stellar_stats_path: Path to stellar normalization stats file (required if not using quantile)
         quantile_path: Path to quantile transformer .pkl file (optional, alternative to Z-score)
+        dm_stats_path: Optional path to DM normalization stats (for cosmo_norm mode)
+        gas_stats_path: Optional path to Gas normalization stats (for cosmo_norm mode)
     """
     # Log transform for ALL channels (including Stars)
     # Use 1e-3 offset as in notebook for stellar channel
@@ -308,12 +321,14 @@ def astro_normalizations(dataset, stellar_stats_path=None, quantile_path=None):
     star_mag_std = None
     
     # Load DM normalization stats
-    dm_stats_path = '/mnt/home/mlee1/vdm_BIND/data/dark_matter_normalization_stats.npz'
-    if os.path.exists(dm_stats_path):
-        stats = np.load(dm_stats_path)
-        dm_mag_mean = float(stats['dm_mag_mean'])
-        dm_mag_std = float(stats['dm_mag_std'])
-        print(f"✓ Loaded DM stats: mean={dm_mag_mean:.6f}, std={dm_mag_std:.6f}")
+    # Use provided path (e.g., for cosmo_norm) or default
+    _dm_stats_path = dm_stats_path or '/mnt/home/mlee1/vdm_BIND/data/dark_matter_normalization_stats.npz'
+    if os.path.exists(_dm_stats_path):
+        stats = np.load(_dm_stats_path)
+        # Handle both old key names (dm_mag_mean) and new key names (dm_target_mean)
+        dm_mag_mean = float(stats.get('dm_mag_mean', stats.get('dm_target_mean', 0)))
+        dm_mag_std = float(stats.get('dm_mag_std', stats.get('dm_target_std', 1)))
+        print(f"✓ Loaded DM stats from {os.path.basename(_dm_stats_path)}: mean={dm_mag_mean:.6f}, std={dm_mag_std:.6f}")
     else:
         # Fallback to constants
         dm_mag_mean = norms[dataset][4]
@@ -321,12 +336,14 @@ def astro_normalizations(dataset, stellar_stats_path=None, quantile_path=None):
         print(f"⚠️  Using fallback DM stats from constants: mean={dm_mag_mean:.6f}, std={dm_mag_std:.6f}")
     
     # Load Gas normalization stats
-    gas_stats_path = '/mnt/home/mlee1/vdm_BIND/data/gas_normalization_stats.npz'
-    if os.path.exists(gas_stats_path):
-        stats = np.load(gas_stats_path)
-        gas_mag_mean = float(stats['gas_mag_mean'])
-        gas_mag_std = float(stats['gas_mag_std'])
-        print(f"✓ Loaded Gas stats: mean={gas_mag_mean:.6f}, std={gas_mag_std:.6f}")
+    # Use provided path (e.g., for cosmo_norm) or default
+    _gas_stats_path = gas_stats_path or '/mnt/home/mlee1/vdm_BIND/data/gas_normalization_stats.npz'
+    if os.path.exists(_gas_stats_path):
+        stats = np.load(_gas_stats_path)
+        # Handle both old key names (gas_mag_mean) and new key names
+        gas_mag_mean = float(stats.get('gas_mag_mean', stats.get('gas_mean', 0)))
+        gas_mag_std = float(stats.get('gas_mag_std', stats.get('gas_std', 1)))
+        print(f"✓ Loaded Gas stats from {os.path.basename(_gas_stats_path)}: mean={gas_mag_mean:.6f}, std={gas_mag_std:.6f}")
     else:
         # Fallback to constants
         gas_mag_mean = norms[dataset][2]
@@ -387,6 +404,9 @@ def get_astro_data(
     stellar_stats_path='/mnt/home/mlee1/vdm_BIND/data/stellar_normalization_stats.npz',  # Z-score normalization
     quantile_path=None,  # Quantile normalization (alternative to stellar_stats_path)
     include_halo_mass=False,  # NEW: Include log10(halo_mass) as conditioning parameter
+    cosmo_norm=False,  # NEW: Divide fields by Omega_m/Omega_b before log transform
+    dm_stats_path=None,  # NEW: Optional custom DM stats path (for cosmo_norm)
+    gas_stats_path=None,  # NEW: Optional custom Gas stats path (for cosmo_norm)
 ):
     """
     Get astro data with optional sample limiting for fast ablation studies
@@ -409,13 +429,21 @@ def get_astro_data(
         quantile_path: Path to quantile transformer .pkl (alternative to stellar_stats_path)
         include_halo_mass: If True, append log10(halo_mass) to conditioning params.
                           Requires updating param_min/param_max to include halo mass bounds.
+        cosmo_norm: If True, divide fields by cosmological parameters BEFORE log transform.
+                   - DM fields (condition, large_scale, target[0]): divide by Omega_m
+                   - Baryonic fields (target[1], target[2]): divide by Omega_b
+                   This removes first-order cosmology dependence and may improve generalization.
+        dm_stats_path: Path to DM normalization stats (for cosmo_norm mode)
+        gas_stats_path: Path to Gas normalization stats (for cosmo_norm mode)
     """
     # Create transforms with stellar normalization (Z-score OR quantile)
     train_transforms = [
-        astro_normalizations(dataset, stellar_stats_path=stellar_stats_path, quantile_path=quantile_path)
+        astro_normalizations(dataset, stellar_stats_path=stellar_stats_path, quantile_path=quantile_path,
+                            dm_stats_path=dm_stats_path, gas_stats_path=gas_stats_path)
     ]
     test_transforms = [
-        astro_normalizations(dataset, stellar_stats_path=stellar_stats_path, quantile_path=quantile_path)
+        astro_normalizations(dataset, stellar_stats_path=stellar_stats_path, quantile_path=quantile_path,
+                            dm_stats_path=dm_stats_path, gas_stats_path=gas_stats_path)
     ]
     # train_transforms = [
     #         astro_normalizations(dataset)
@@ -444,6 +472,7 @@ def get_astro_data(
         limit_train_samples=limit_train_samples,
         limit_val_samples=limit_val_samples,
         include_halo_mass=include_halo_mass,
+        cosmo_norm=cosmo_norm,
     )
     dm.setup(stage=stage)
     return dm

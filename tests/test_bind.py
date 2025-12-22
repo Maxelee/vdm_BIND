@@ -311,6 +311,29 @@ class TestLoadNormalizationStats:
         
         with pytest.raises(FileNotFoundError):
             load_normalization_stats(base_path=str(tmp_path))
+    
+    def test_cosmo_norm_stats(self):
+        """Should load cosmo_norm stats with dm_input_mean/std."""
+        from bind.config_loader import load_normalization_stats
+        
+        stats = load_normalization_stats(cosmo_norm=True)
+        
+        # Cosmo-norm should include dm_input_mean/std
+        assert 'dm_input_mean' in stats, "cosmo_norm should include dm_input_mean"
+        assert 'dm_input_std' in stats, "cosmo_norm should include dm_input_std"
+        
+        # And all the target stats
+        assert 'dm_mag_mean' in stats
+        assert 'dm_mag_std' in stats
+        assert 'gas_mag_mean' in stats
+        assert 'gas_mag_std' in stats
+        assert 'star_mag_mean' in stats
+        assert 'star_mag_std' in stats
+        
+        # Cosmo-norm DM input should be higher (divided by ~0.3)
+        standard_stats = load_normalization_stats(cosmo_norm=False)
+        assert stats['dm_input_mean'] > standard_stats['dm_mag_mean'], \
+            "Cosmo-norm DM input mean should be higher than standard"
 
 
 class TestHaloPaster2D:

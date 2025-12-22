@@ -12,7 +12,7 @@ from config import NORMALIZATION_STATS_DIR
 from vdm.verbosity import VerbosityContext
 
 
-def load_normalization_stats(base_path=None, verbosity=None):
+def load_normalization_stats(base_path=None, verbosity=None, cosmo_norm=False):
     """
     Load normalization statistics from .npz files.
     
@@ -24,6 +24,9 @@ def load_normalization_stats(base_path=None, verbosity=None):
     verbosity : int or str or bool, optional
         Verbosity level. If None, uses global setting.
         If bool, True=DEBUG, False=SILENT.
+    cosmo_norm : bool, optional
+        If True, load cosmo_norm stats (fields divided by Omega_m/Omega_b before log).
+        Default is False for backward compatibility.
     
     Returns
     -------
@@ -39,32 +42,59 @@ def load_normalization_stats(base_path=None, verbosity=None):
     ctx = VerbosityContext(verbosity)
     stats = {}
     
+    # Select appropriate file names based on cosmo_norm
+    if cosmo_norm:
+        dm_filename = 'cosmo_norm_dark_matter_stats.npz'
+        gas_filename = 'cosmo_norm_gas_stats.npz'
+        star_filename = 'cosmo_norm_stellar_stats.npz'
+        dm_input_filename = 'cosmo_norm_dm_input_stats.npz'
+        ctx.vprint_debug("🌌 Loading COSMO_NORM normalization stats")
+    else:
+        dm_filename = 'dark_matter_normalization_stats.npz'
+        gas_filename = 'gas_normalization_stats.npz'
+        star_filename = 'stellar_normalization_stats.npz'
+        dm_input_filename = None  # Not separate for standard normalization
+    
+    # Load DM input stats (for condition normalization) if cosmo_norm
+    if dm_input_filename is not None:
+        dm_input_path = os.path.join(base_path, dm_input_filename)
+        if os.path.exists(dm_input_path):
+            dm_input_stats = np.load(dm_input_path)
+            stats['dm_input_mean'] = float(dm_input_stats.get('dm_input_mean', 0))
+            stats['dm_input_std'] = float(dm_input_stats.get('dm_input_std', 1))
+            ctx.vprint_debug(f"✓ Loaded DM input normalization: mean={stats['dm_input_mean']:.6f}, std={stats['dm_input_std']:.6f}")
+        else:
+            ctx.vprint_debug(f"⚠ DM input stats file not found: {dm_input_path}, will use default")
+    
     # Load DM stats
-    dm_path = os.path.join(base_path, 'dark_matter_normalization_stats.npz')
+    dm_path = os.path.join(base_path, dm_filename)
     if os.path.exists(dm_path):
         dm_stats = np.load(dm_path)
-        stats['dm_mag_mean'] = float(dm_stats['dm_mag_mean'])
-        stats['dm_mag_std'] = float(dm_stats['dm_mag_std'])
+        # Handle both old and new key names
+        stats['dm_mag_mean'] = float(dm_stats.get('dm_mag_mean', dm_stats.get('dm_target_mean', 0)))
+        stats['dm_mag_std'] = float(dm_stats.get('dm_mag_std', dm_stats.get('dm_target_std', 1)))
         ctx.vprint_debug(f"✓ Loaded DM normalization: mean={stats['dm_mag_mean']:.6f}, std={stats['dm_mag_std']:.6f}")
     else:
         raise FileNotFoundError(f"DM normalization file not found: {dm_path}")
     
     # Load Gas stats
-    gas_path = os.path.join(base_path, 'gas_normalization_stats.npz')
+    gas_path = os.path.join(base_path, gas_filename)
     if os.path.exists(gas_path):
         gas_stats = np.load(gas_path)
-        stats['gas_mag_mean'] = float(gas_stats['gas_mag_mean'])
-        stats['gas_mag_std'] = float(gas_stats['gas_mag_std'])
+        # Handle both old and new key names
+        stats['gas_mag_mean'] = float(gas_stats.get('gas_mag_mean', gas_stats.get('gas_mean', 0)))
+        stats['gas_mag_std'] = float(gas_stats.get('gas_mag_std', gas_stats.get('gas_std', 1)))
         ctx.vprint_debug(f"✓ Loaded Gas normalization: mean={stats['gas_mag_mean']:.6f}, std={stats['gas_mag_std']:.6f}")
     else:
         raise FileNotFoundError(f"Gas normalization file not found: {gas_path}")
     
     # Load Stellar stats
-    star_path = os.path.join(base_path, 'stellar_normalization_stats.npz')
+    star_path = os.path.join(base_path, star_filename)
     if os.path.exists(star_path):
         star_stats = np.load(star_path)
-        stats['star_mag_mean'] = float(star_stats['star_mag_mean'])
-        stats['star_mag_std'] = float(star_stats['star_mag_std'])
+        # Handle both old and new key names
+        stats['star_mag_mean'] = float(star_stats.get('star_mag_mean', star_stats.get('star_mean', 0)))
+        stats['star_mag_std'] = float(star_stats.get('star_mag_std', star_stats.get('star_std', 1)))
         ctx.vprint_debug(f"✓ Loaded Stellar normalization: mean={stats['star_mag_mean']:.6f}, std={stats['star_mag_std']:.6f}")
     else:
         raise FileNotFoundError(f"Stellar normalization file not found: {star_path}")
@@ -140,7 +170,9 @@ class ConfigLoader:
                        'use_param_conditioning', 'attention', 'enable_ema', 'enable_early_stopping',
                        'enable_gradient_monitoring',
                        # DiT parameters
-                       'use_quantile_normalization', 'use_ema'}
+                       'use_quantile_normalization', 'use_ema',
+                       # Cosmological normalization (NEW)
+                       'cosmo_norm'}
         
         # Assign attributes with correct types
         for key, value in params.items():
@@ -286,6 +318,19 @@ class ConfigLoader:
                 self.quantile_path = None
         else:
             self.quantile_path = None
+
+        # ✅ COSMOLOGICAL NORMALIZATION SUPPORT (NEW)
+        # If cosmo_norm=True, fields are divided by Omega_m/Omega_b before log transform
+        if not hasattr(self, 'cosmo_norm'):
+            self.cosmo_norm = False
+        if self.cosmo_norm:
+            self._verbosity.vprint_summary("[ConfigLoader] 🌌 COSMO_NORM enabled: dividing fields by Ω_m/Ω_b")
+            # Auto-set quantile path to cosmo_norm version if not explicitly set
+            if self.quantile_path is None or 'cosmo_norm' not in self.quantile_path:
+                default_cosmo_quantile = '/mnt/home/mlee1/vdm_BIND/data/cosmo_norm_quantile_normalizer_stellar.pkl'
+                if os.path.exists(default_cosmo_quantile) and self.quantile_path is None:
+                    self.quantile_path = default_cosmo_quantile
+                    self._verbosity.vprint_debug(f"[ConfigLoader] Auto-set cosmo_norm quantile path: {self.quantile_path}")
 
         self._verbosity.vprint_debug(f"[ConfigLoader] Loaded config from: {self.config_path}")
         if self._verbosity.is_debug():

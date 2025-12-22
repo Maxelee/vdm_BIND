@@ -67,6 +67,7 @@ class BIND:
         self.num_large_scales = 0  # default: no large-scale conditioning
         self.quantile_path = None  # default: no quantile normalization
         self.use_quantile_normalization = False  # default: use Z-score for stellar channel
+        self.cosmo_norm = False  # default: no cosmological normalization
         
         if self.config_path is not None:
             try:
@@ -74,6 +75,7 @@ class BIND:
                 self.cropsize = getattr(config, 'cropsize', 128)
                 self.num_large_scales = getattr(config, 'large_scale_channels', 0)
                 self.quantile_path = getattr(config, 'quantile_path', None)
+                self.cosmo_norm = getattr(config, 'cosmo_norm', False)
                 
                 # Resolve relative quantile_path to absolute path
                 if self.quantile_path is not None and not os.path.isabs(self.quantile_path):
@@ -87,6 +89,10 @@ class BIND:
                     if self.verbose:
                         print(f"[BIND] 🌟 Quantile normalization enabled: {self.quantile_path}")
                 
+                # Log cosmo_norm status
+                if self.cosmo_norm and self.verbose:
+                    print(f"[BIND] 🌌 COSMO_NORM enabled: dividing fields by Ω_m/Ω_b")
+                
                 if self.verbose and self.num_large_scales > 0:
                     print(f"[BIND] Loaded large_scale_channels from config: {self.num_large_scales}")
             except Exception as e:
@@ -98,12 +104,16 @@ class BIND:
         
         # Load normalization stats from .npz files (matches training data)
         # load_normalization_stats is already imported at module level
-        norm_stats = load_normalization_stats()  # Uses project root by default
+        norm_stats = load_normalization_stats(cosmo_norm=self.cosmo_norm)  # Uses project root by default
         
         # Set normalization parameters
-        # Input (DM condition): use DM stats
-        self.input_mean = norms['IllustrisTNG'][6]
-        self.input_std = norms['IllustrisTNG'][7]
+        # Input (DM condition): use cosmo_norm stats if available, else legacy hardcoded stats
+        if self.cosmo_norm and 'dm_input_mean' in norm_stats:
+            self.input_mean = norm_stats['dm_input_mean']
+            self.input_std = norm_stats['dm_input_std']
+        else:
+            self.input_mean = norms['IllustrisTNG'][6]
+            self.input_std = norms['IllustrisTNG'][7]
 
         # Targets (DM, Gas, Stars): use respective stats
         self.target_means = np.array([
@@ -301,9 +311,8 @@ class BIND:
                     # Resize to target_res if needed (handles both up and downsampling)
                     if scale_map.shape[0] != target_res:
                         scale_map = self._resize_2d(scale_map, target_res)
-                    # scale_map /= omega_m  # Scale by omega_m for 2D
                 
-                scale_map_normalized = self._normalize_condition(scale_map)
+                scale_map_normalized = self._normalize_condition(scale_map, omega_m=omega_m)
                 all_scale_maps.append(scale_map_normalized)
             
             # First scale (6.25 Mpc) is the condition
@@ -537,9 +546,23 @@ class BIND:
                     subvolume[i, j] = simulation_data[x_idx, y_idx]
         return subvolume
     
-    def _normalize_condition(self, condition: np.ndarray) -> np.ndarray:
-        """Normalize condition: log10(condition + 1), then standardize."""
-        condition_log = np.log10(condition + 1)
+    def _normalize_condition(self, condition: np.ndarray, omega_m: float = None) -> np.ndarray:
+        """
+        Normalize condition: log10(condition + 1), then standardize.
+        
+        If cosmo_norm is enabled, divides by Omega_m before log transform.
+        
+        Args:
+            condition: Raw condition field
+            omega_m: Omega_m value (required if cosmo_norm=True)
+        """
+        if self.cosmo_norm:
+            if omega_m is None:
+                raise ValueError("omega_m required for cosmo_norm normalization")
+            # Cosmo-norm: divide by Omega_m, then log transform
+            condition_log = np.log10(condition / omega_m + 1)
+        else:
+            condition_log = np.log10(condition + 1)
         return (condition_log - self.input_mean) / self.input_std
     
     def generate_halos(self, batch_size: int = 10, conditional_params: np.ndarray = None, 
@@ -673,13 +696,21 @@ class BIND:
         
         generated_samples = sample(vdm_model, conditions, batch_size=batch_size, conditional_params=conditional_params, n_sampling_steps=n_sampling_steps)
         print(generated_samples.shape)
+        
+        # Extract cosmological parameters for cosmo_norm if needed
+        omega_m_val = None
+        omega_b_val = None
+        if self.cosmo_norm and conditional_params is not None:
+            # Omega_m is at index 0, Omega_b is at index 6
+            omega_m_val = conditional_params[0, 0].cpu().numpy() if torch.is_tensor(conditional_params) else conditional_params[0, 0]
+            omega_b_val = conditional_params[0, 6].cpu().numpy() if torch.is_tensor(conditional_params) else conditional_params[0, 6]
+            if self.verbose:
+                print(f"[BIND] 📊 Cosmo-norm unnormalization: Omega_m={omega_m_val:.4f}, Omega_b={omega_b_val:.4f}")
+        
         generated_halos = []
         for i in range(len(generated_samples)):
-            unnormalized = self._unnormalize_target(generated_samples[i].numpy())
-            # unnormalized[:, 0] *= conditional_params[0, 0].to('cpu').numpy()
-            # # print(conditional_params[0, 0].to('cpu').numpy())
-            # unnormalized[:, 1] *= conditional_params[0, 6].to('cpu').numpy()
-            # unnormalized[:, 2] *= conditional_params[0, 6].to('cpu').numpy()
+            unnormalized = self._unnormalize_target(generated_samples[i].numpy(), 
+                                                    omega_m=omega_m_val, omega_b=omega_b_val)
             
             # Apply mass conservation normalization if enabled
             if conserve_mass:
@@ -702,16 +733,20 @@ class BIND:
             print(f"[BIND] Generated {len(generated_halos)} halo sets.")
         return self.generated_images
     
-    def _unnormalize_target(self, target_norm: np.ndarray) -> np.ndarray:
+    def _unnormalize_target(self, target_norm: np.ndarray, omega_m: float = None, omega_b: float = None) -> np.ndarray:
         """
         Unnormalize target from z-normalized log10 field back to physical units.
         
         Supports both Z-score normalization (legacy) and quantile normalization 
         for the stellar channel (new).
         
+        If cosmo_norm is enabled, multiplies by Omega_m/Omega_b after unnormalization.
+        
         Args:
             target_norm: Normalized target (n_realizations, 3, H, W[, D])
                         Channels are [dm, gas, stars]
+            omega_m: Omega_m value (required if cosmo_norm=True)
+            omega_b: Omega_b value (required if cosmo_norm=True)
         
         Returns:
             Unnormalized field in physical units (M_sun)
@@ -746,7 +781,20 @@ class BIND:
             field_unnorm[:, 2] = target_norm[:, 2] * self.target_stds[2] + self.target_means[2]
         
         # Convert from log10 back to physical units
-        return 10 ** field_unnorm - 1
+        physical_field = 10 ** field_unnorm - 1
+        
+        # If cosmo_norm, multiply back by cosmological parameters
+        if self.cosmo_norm:
+            if omega_m is None or omega_b is None:
+                raise ValueError("omega_m and omega_b required for cosmo_norm unnormalization")
+            # DM channel: multiply by Omega_m
+            physical_field[:, 0] *= omega_m
+            # Gas channel: multiply by Omega_b
+            physical_field[:, 1] *= omega_b
+            # Stellar channel: multiply by Omega_b
+            physical_field[:, 2] *= omega_b
+        
+        return physical_field
     
     def _normalize_generated_mass(self, generated_halo: np.ndarray, dmo_cutout: np.ndarray) -> np.ndarray:
         """
