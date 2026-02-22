@@ -42,28 +42,28 @@ def plot_full_box_comparison(full_dmo, full_hydro, hydro_replaced, final_maps, o
     fig, ax = plt.subplots(2, 4, figsize=(16, 8))
 
     # Top row - log-scaled density maps
-    im0 = ax[0, 0].imshow(np.log10(full_dmo[:, :]), vmin=8, vmax=12, cmap='inferno', origin='lower')
+    im0 = ax[0, 0].imshow(np.log10(np.maximum(full_dmo[:, :], 1e-10)), vmin=8, vmax=12, cmap='inferno', origin='lower')
     ax[0, 0].set_title('DMO', fontsize=16, fontweight='bold')
     ax[0, 0].set_xlabel('X [pixels]', fontsize=14)
     ax[0, 0].set_ylabel('Y [pixels]', fontsize=14)
     cbar0 = plt.colorbar(im0, ax=ax[0, 0], fraction=0.046, pad=0.04)
     cbar0.set_label(r'$\log_{10}(M / M_\odot)$', fontsize=12)
 
-    im1 = ax[0, 1].imshow(np.log10(full_hydro[:, :]), vmin=8, vmax=12, cmap='inferno', origin='lower')
+    im1 = ax[0, 1].imshow(np.log10(np.maximum(full_hydro[:, :], 1e-10)), vmin=8, vmax=12, cmap='inferno', origin='lower')
     ax[0, 1].set_title('Hydro', fontsize=16, fontweight='bold')
     ax[0, 1].set_xlabel('X [pixels]', fontsize=14)
     ax[0, 1].set_ylabel('Y [pixels]', fontsize=14)
     cbar1 = plt.colorbar(im1, ax=ax[0, 1], fraction=0.046, pad=0.04)
     cbar1.set_label(r'$\log_{10}(M / M_\odot)$', fontsize=12)
 
-    im2 = ax[0, 2].imshow(np.log10(hydro_replaced[:, :]), vmin=8, vmax=12, cmap='inferno', origin='lower')
+    im2 = ax[0, 2].imshow(np.log10(np.maximum(hydro_replaced[:, :], 1e-10)), vmin=8, vmax=12, cmap='inferno', origin='lower')
     ax[0, 2].set_title('Hydro Replaced', fontsize=16, fontweight='bold')
     ax[0, 2].set_xlabel('X [pixels]', fontsize=14)
     ax[0, 2].set_ylabel('Y [pixels]', fontsize=14)
     cbar2 = plt.colorbar(im2, ax=ax[0, 2], fraction=0.046, pad=0.04)
     cbar2.set_label(r'$\log_{10}(M / M_\odot)$', fontsize=12)
 
-    im3 = ax[0, 3].imshow(np.log10(np.array(final_maps).mean(axis=0)), vmin=8, vmax=12, cmap='inferno', origin='lower')
+    im3 = ax[0, 3].imshow(np.log10(np.maximum(np.array(final_maps).mean(axis=0), 1e-10)), vmin=8, vmax=12, cmap='inferno', origin='lower')
     ax[0, 3].set_title('BIND Generated', fontsize=16, fontweight='bold')
     ax[0, 3].set_xlabel('X [pixels]', fontsize=14)
     ax[0, 3].set_ylabel('Y [pixels]', fontsize=14)
@@ -576,8 +576,12 @@ def plot_parameter_extremes_comparison(extreme_type, param_name, param_value,
         Directory to save plots
     """
     print(f"Parameter extreme analysis for {extreme_type} {param_name} = {param_value}")
-    print("This function is a placeholder - implement if needed for parameter studies")
-    pass
+    import warnings
+    warnings.warn(
+        f"plot_parameter_extremes_comparison() is a placeholder. "
+        f"Implement for parameter study visualizations.",
+        stacklevel=2,
+    )
 
 
 def run_all_analyses(full_dmo, full_hydro, hydro_replaced, final_maps,

@@ -14,7 +14,13 @@ from .model_manager import ModelManager
 from .sampling import sample
 
 from vdm.constants import norms_256 as norms
-import MAS_library as MASL
+
+try:
+    import MAS_library as MASL
+    HAS_MASL = True
+except ImportError:
+    MASL = None
+    HAS_MASL = False
 
 class BIND:
     """
@@ -156,7 +162,15 @@ class BIND:
         
         Returns:
             np.ndarray: 3D grid of shape (gridsize, gridsize, gridsize) or 2D (gridsize, gridsize).
+        
+        Raises:
+            ImportError: If MAS_library (pylians) is not installed.
         """
+        if not HAS_MASL:
+            raise ImportError(
+                "MAS_library (pylians) is required for voxelization. "
+                "Install it with: pip install Pylians"
+            )
         if self.verbose:
             print("[BIND] Voxelizing simulation...")
         
@@ -684,7 +698,7 @@ class BIND:
                 print("[BIND] Extracting DMO cutouts for mass normalization...")
             # Extract DMO cutouts for each halo
             boxsize_mpc = self.boxsize / 1000.0
-            omega_m = 1#conditional_params[0, 0].to('cpu').numpy() if conditional_params is not None else 0.3
+            omega_m = conditional_params[0, 0].to('cpu').numpy() if conditional_params is not None else 0.3
             for i, meta in enumerate(self.extracted['metadata']):
                 pos_mpc = meta['position'] / 1000.0
                 if self.dim == '3d':

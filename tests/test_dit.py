@@ -294,6 +294,7 @@ class TestLightDiTVDM:
         with torch.no_grad():
             samples = model.draw_samples(
                 conditioning,
+                batch_size=2,
                 param_conditioning=params,
                 n_sampling_steps=2,
             )

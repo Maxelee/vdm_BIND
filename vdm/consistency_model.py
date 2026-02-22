@@ -152,11 +152,13 @@ class ConsistencyFunction(nn.Module):
         net: nn.Module,
         sigma_data: float = 0.5,
         sigma_min: float = 0.002,
+        sigma_max: float = 80.0,
     ):
         super().__init__()
         self.net = net
         self.sigma_data = sigma_data
         self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
     
     def get_scalings(self, sigma: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         """
@@ -210,8 +212,11 @@ class ConsistencyFunction(nn.Module):
         
         # Network prediction
         # Convert sigma to time-like value for network (expects values in [0, 1])
-        # We use log scaling for better numerical stability
-        t = torch.log(sigma.view(-1)) / 4  # Rough scaling
+        # Log-linear mapping: t = log(σ/σ_min) / log(σ_max/σ_min)
+        # This spreads the full sigma range [σ_min, σ_max] evenly across [0, 1]
+        log_sigma_min = math.log(self.sigma_min)
+        log_sigma_max = math.log(self.sigma_max)
+        t = (torch.log(sigma.view(-1)) - log_sigma_min) / (log_sigma_max - log_sigma_min)
         t = torch.clamp(t, 0, 1)
         
         F_x = self.net(x_scaled, t, conditioning=conditioning, param_conditioning=param_conditioning)
@@ -743,8 +748,10 @@ class LightConsistency(LightningModule):
     
     def configure_optimizers(self):
         """Configure optimizer and scheduler."""
+        # Only optimize the consistency model parameters, NOT the target model
+        # (target model is updated via EMA, not gradient descent)
         optimizer = torch.optim.AdamW(
-            self.parameters(),
+            self.consistency_model.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
         )
@@ -825,19 +832,22 @@ def create_consistency_model(
     Returns:
         LightConsistency instance
     """
-    from vdm.networks_clean import UNet
+    from vdm.networks_clean import UNetVDM as UNet
     
-    input_channels = output_channels + conditioning_channels
+    # Split conditioning into base DM (1 channel) and large-scale (remaining)
+    base_cond_channels = 1
+    large_scale_ch = max(0, conditioning_channels - base_cond_channels)
     
     unet = UNet(
-        in_channels=input_channels,
-        out_channels=output_channels,
+        input_channels=output_channels,
+        conditioning_channels=base_cond_channels,
+        large_scale_channels=large_scale_ch,
         embedding_dim=embedding_dim,
         n_blocks=n_blocks,
         norm_groups=norm_groups,
         n_attention_heads=n_attention_heads,
         use_fourier_features=use_fourier_features,
-        fourier_legacy=fourier_legacy,
+        legacy_fourier=fourier_legacy,
         add_attention=add_attention,
     )
     
@@ -859,6 +869,7 @@ def create_consistency_model(
         net=net_wrapper,
         sigma_data=sigma_data,
         sigma_min=sigma_min,
+        sigma_max=sigma_max,
     )
     
     # Create consistency model

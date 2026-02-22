@@ -35,7 +35,14 @@ def sample(vdm, conditions, batch_size=1, conditional_params=None, n_sampling_st
     torch.Tensor
         Shape (N, batch_size, 3, H, W) or (N, batch_size, 3, H, W, D).
     """
-    vdm = vdm.to('cuda')
+    # Auto-detect device (supports CUDA, MPS, and CPU)
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    vdm = vdm.to(device)
     samples = []
 
     # Determine number of sampling steps
@@ -49,17 +56,17 @@ def sample(vdm, conditions, batch_size=1, conditional_params=None, n_sampling_st
         # cond is now (C, H, W) or (C, H, W, D) where C = 1 + num_large_scales
         # Expand to batch_size: (batch_size, C, H, W) or (batch_size, C, H, W, D)
         if is_3d:
-            cond_expanded = cond.unsqueeze(0).expand(batch_size, -1, -1, -1, -1).to('cuda')
+            cond_expanded = cond.unsqueeze(0).expand(batch_size, -1, -1, -1, -1).to(device)
         else:
-            cond_expanded = cond.unsqueeze(0).expand(batch_size, -1, -1, -1).to('cuda')
+            cond_expanded = cond.unsqueeze(0).expand(batch_size, -1, -1, -1).to(device)
 
         if conditional_params is not None:
             # Handle both tensor and array inputs
             if isinstance(conditional_params, torch.Tensor):
-                param_row = conditional_params[i].to('cuda')
+                param_row = conditional_params[i].to(device)
             else:
-                param_row = torch.tensor(conditional_params[i], dtype=torch.float32, device='cuda')
-            param_expanded = param_row.unsqueeze(0).expand(batch_size, -1).to('cuda')
+                param_row = torch.tensor(conditional_params[i], dtype=torch.float32, device=device)
+            param_expanded = param_row.unsqueeze(0).expand(batch_size, -1).to(device)
         else:
             param_expanded = None
 

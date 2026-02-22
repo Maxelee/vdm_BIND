@@ -725,19 +725,22 @@ def create_ot_flow_model(
     Returns:
         LightOTFlow instance
     """
-    from vdm.networks_clean import UNet
+    from vdm.networks_clean import UNetVDM as UNet
     
-    input_channels = output_channels + conditioning_channels
+    # Split conditioning into base DM (1 channel) and large-scale (remaining)
+    base_cond_channels = 1
+    large_scale_ch = max(0, conditioning_channels - base_cond_channels)
     
     unet = UNet(
-        in_channels=input_channels,
-        out_channels=output_channels,
+        input_channels=output_channels,
+        conditioning_channels=base_cond_channels,
+        large_scale_channels=large_scale_ch,
         embedding_dim=embedding_dim,
         n_blocks=n_blocks,
         norm_groups=norm_groups,
         n_attention_heads=n_attention_heads,
         use_fourier_features=use_fourier_features,
-        fourier_legacy=fourier_legacy,
+        legacy_fourier=fourier_legacy,
         add_attention=add_attention,
     )
     

@@ -400,7 +400,7 @@ class LightDSM(LightningModule):
         Generate samples using DDPM reverse process.
         
         Uses the reverse SDE discretization:
-        x_{t-dt} = x_t + beta_t * [x_t + 2 * score(x_t, t)] * dt + sqrt(2 * beta_t * dt) * z
+        x_{t-dt} = x_t + 0.5 * beta_t * [x_t + 2 * score(x_t, t)] * dt + sqrt(beta_t * dt) * z
         
         For noise prediction, score = -epsilon / sigma_t
         
@@ -449,12 +449,12 @@ class LightDSM(LightningModule):
             # Reverse SDE step (Euler-Maruyama)
             beta_t = self.beta_min + t * (self.beta_max - self.beta_min)
             
-            # Drift: beta_t * [x_t + 2 * score] * dt
-            drift = beta_t * (x + 2 * score) * dt
+            # Drift: 0.5 * beta_t * [x_t + 2 * score] * dt
+            drift = 0.5 * beta_t * (x + 2 * score) * dt
             
-            # Diffusion: sqrt(2 * beta_t * dt) * z (only if not last step)
+            # Diffusion: sqrt(beta_t * dt) * z (only if not last step)
             if i < steps - 1:
-                diffusion = torch.sqrt(2 * beta_t * dt) * torch.randn_like(x)
+                diffusion = torch.sqrt(beta_t * dt) * torch.randn_like(x)
             else:
                 diffusion = 0
             

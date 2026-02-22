@@ -3,7 +3,27 @@ import numpy as np
 import torch.nn as nn
 import math
 import matplotlib.pyplot as plt
+import warnings
 from vdm.constants import norms, boxsize
+
+
+def load_checkpoint(path, map_location='cpu'):
+    """
+    Load a PyTorch checkpoint with consistent settings.
+    
+    Uses weights_only=False because our checkpoints contain PyTorch Lightning
+    state with custom objects (schedulers, callbacks, etc.) that require 
+    unpickling. This is safe for locally-generated checkpoints.
+    
+    Args:
+        path: Path to the checkpoint file
+        map_location: Device mapping for loaded tensors (default: 'cpu')
+    
+    Returns:
+        Loaded checkpoint dict
+    """
+    return torch.load(path, map_location=map_location, weights_only=False)
+
 
 def kl_std_normal(mean_squared, var):
     return 0.5 * (var + mean_squared - torch.log(var.clamp(min=1e-15)) - 1.0)
@@ -234,5 +254,6 @@ def draw_figure(x,sample,conditioning,dataset):
         flattened_sample = np.average(mcdm_gen.reshape(nmaps,-1),axis=-1)
         flattened_x = np.average(x.cpu().numpy().reshape(nmaps,-1),axis=-1)
         ax.flat[5].scatter(flattened_x, flattened_sample)
-    ax.flat[5].plot(flattened_x, flattened_x, color='grey')
-    return fig
+        ax.flat[5].plot(flattened_x, flattened_x, color='grey')
+        return fig
+    return None
