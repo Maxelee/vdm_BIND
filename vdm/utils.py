@@ -234,5 +234,6 @@ def draw_figure(x,sample,conditioning,dataset):
         flattened_sample = np.average(mcdm_gen.reshape(nmaps,-1),axis=-1)
         flattened_x = np.average(x.cpu().numpy().reshape(nmaps,-1),axis=-1)
         ax.flat[5].scatter(flattened_x, flattened_sample)
-    ax.flat[5].plot(flattened_x, flattened_x, color='grey')
-    return fig
+        ax.flat[5].plot(flattened_x, flattened_x, color='grey')
+        return fig
+    return None

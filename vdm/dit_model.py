@@ -308,13 +308,12 @@ class LightDiTVDM(LightningModule):
             c = -torch.expm1(gamma_s - gamma_t)  # = 1 - exp(gamma_s - gamma_t)
             
             # Update z: remove predicted noise, rescale, optionally add fresh noise
-            # Mean update: z_mean = (alpha_t / alpha_s) * z - (sigma_t * c / sigma_s) * eps_pred
+            # Mean update (VDM Eq. 34): z_mean = (alpha_t / alpha_s) * (z - c * sigma_s * eps_pred)
             # Noise coefficient: sqrt(sigma_t^2 * c)
             
             alpha_ratio = alpha_t / (alpha_s + 1e-8)
-            noise_coef = sigma_t * c / (sigma_s + 1e-8)
             
-            z_mean = alpha_ratio * z - noise_coef * eps_pred
+            z_mean = alpha_ratio * (z - c * sigma_s * eps_pred)
             
             if i < n_steps - 1:
                 # Add stochastic noise (except at last step)

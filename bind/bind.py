@@ -684,7 +684,7 @@ class BIND:
                 print("[BIND] Extracting DMO cutouts for mass normalization...")
             # Extract DMO cutouts for each halo
             boxsize_mpc = self.boxsize / 1000.0
-            omega_m = 1#conditional_params[0, 0].to('cpu').numpy() if conditional_params is not None else 0.3
+            omega_m = conditional_params[0, 0].to('cpu').numpy() if conditional_params is not None else 0.3
             for i, meta in enumerate(self.extracted['metadata']):
                 pos_mpc = meta['position'] / 1000.0
                 if self.dim == '3d':

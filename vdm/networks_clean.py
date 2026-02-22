@@ -1202,14 +1202,22 @@ class UNetVDM(nn.Module):
         # NEW: Auxiliary mask prediction head
         self.use_auxiliary_mask = use_auxiliary_mask
         if use_auxiliary_mask:
+            # Use final_decoder_ch (not embedding_dim) since the decoder output
+            # may have different channel count due to channel capping in deep networks
+            mask_ch = final_decoder_ch
+            mask_mid = max(mask_ch // 2, norm_groups)  # Ensure >= norm_groups for GroupNorm
+            # Find valid norm_groups for mask_mid
+            mask_norm_groups = norm_groups
+            while mask_mid % mask_norm_groups != 0 and mask_norm_groups > 1:
+                mask_norm_groups -= 1
             self.mask_head = nn.Sequential(
-                nn.Conv2d(embedding_dim, embedding_dim // 2, kernel_size=3, padding=1),
-                nn.GroupNorm(num_groups=norm_groups, num_channels=embedding_dim // 2),
+                nn.Conv2d(mask_ch, mask_mid, kernel_size=3, padding=1),
+                nn.GroupNorm(num_groups=mask_norm_groups, num_channels=mask_mid),
                 nn.SiLU(),
-                nn.Conv2d(embedding_dim // 2, norm_groups, kernel_size=3, padding=1),
-                nn.GroupNorm(num_groups=norm_groups, num_channels=norm_groups),
+                nn.Conv2d(mask_mid, mask_norm_groups, kernel_size=3, padding=1),
+                nn.GroupNorm(num_groups=mask_norm_groups, num_channels=mask_norm_groups),
                 nn.SiLU(),
-                nn.Conv2d(norm_groups, 1, kernel_size=1),  # (B, 1, H, W) logits
+                nn.Conv2d(mask_norm_groups, 1, kernel_size=1),  # (B, 1, H, W) logits
             )
             # Initialize final layer with small weights
             nn.init.normal_(self.mask_head[-1].weight, mean=0.0, std=0.01)

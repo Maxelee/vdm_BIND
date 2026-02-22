@@ -27,14 +27,14 @@ TIME=${TIME:-"48:00:00"}
 
 # All supported model types and their configs
 declare -A MODEL_CONFIGS=(
-    ["clean"]="configs/yaml/clean_vdm.yaml"
-    ["triple"]="configs/yaml/triple_vdm.yaml"
-    ["interpolant"]="configs/yaml/interpolant.yaml"
-    ["stochastic_interpolant"]="configs/yaml/stochastic_interpolant.yaml"
-    ["ot_flow"]="configs/yaml/ot_flow.yaml"
-    ["dsm"]="configs/yaml/dsm.yaml"
-    ["ddpm"]="configs/yaml/ddpm.yaml"
-    ["consistency"]="configs/yaml/consistency.yaml"
+    ["clean"]="configs/clean_vdm_aggressive_stellar.ini"
+    ["triple"]="configs/clean_vdm_triple.ini"
+    ["interpolant"]="configs/interpolant.ini"
+    ["stochastic_interpolant"]="configs/stochastic_interpolant.ini"
+    ["ot_flow"]="configs/ot_flow.ini"
+    ["dsm"]="configs/dsm.ini"
+    ["ddpm"]="configs/ddpm.ini"
+    ["consistency"]="configs/consistency.ini"
 )
 
 # Parse arguments
