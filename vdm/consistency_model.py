@@ -748,8 +748,10 @@ class LightConsistency(LightningModule):
     
     def configure_optimizers(self):
         """Configure optimizer and scheduler."""
+        # Only optimize the consistency model parameters, NOT the target model
+        # (target model is updated via EMA, not gradient descent)
         optimizer = torch.optim.AdamW(
-            self.parameters(),
+            self.consistency_model.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
         )

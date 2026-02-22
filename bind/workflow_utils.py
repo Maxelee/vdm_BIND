@@ -12,7 +12,7 @@ import os
 from vdm.astro_dataset import get_astro_data
 from vdm import vdm_model_clean as vdm_module, networks_clean as networks
 from vdm import vdm_model_triple as vdm_triple_module
-from vdm.utils import draw_figure
+from vdm.utils import draw_figure, load_checkpoint
 from vdm.verbosity import (
     vprint, vprint_summary, vprint_debug, 
     SILENT, SUMMARY, DEBUG,
@@ -142,7 +142,7 @@ class ModelManager:
         # Method 2: Check checkpoint state_dict structure
         if config.best_ckpt and os.path.exists(config.best_ckpt):
             try:
-                checkpoint = torch.load(config.best_ckpt, map_location='cpu', weights_only=False)
+                checkpoint = load_checkpoint(config.best_ckpt, map_location='cpu')
                 state_dict = checkpoint.get('state_dict', {})
                 hparams = checkpoint.get('hyper_parameters', {})
                 
@@ -265,7 +265,7 @@ class ModelManager:
         if not config.best_ckpt or not os.path.exists(config.best_ckpt):
             raise ValueError(f"Triple model requires a valid checkpoint. Got: {config.best_ckpt}")
         
-        checkpoint = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)
+        checkpoint = load_checkpoint(config.best_ckpt, map_location='cuda')
         hparams = checkpoint.get('hyper_parameters', {})
         
         if verbose:
@@ -472,7 +472,7 @@ class ModelManager:
             raise ValueError(f"DDPM model requires a valid checkpoint. Got: {config.best_ckpt}")
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
         hparams = checkpoint.get('hyper_parameters', {})
         state_dict = checkpoint.get('state_dict', {})
         
@@ -730,7 +730,7 @@ class ModelManager:
             raise ValueError(f"DSM model requires a valid checkpoint. Got: {config.best_ckpt}")
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
         hparams = checkpoint.get('hyper_parameters', {})
         state_dict = checkpoint.get('state_dict', {})
         
@@ -871,7 +871,7 @@ class ModelManager:
             raise ValueError(f"Interpolant model requires a valid checkpoint. Got: {config.best_ckpt}")
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
         hparams = checkpoint.get('hyper_parameters', {})
         state_dict = checkpoint.get('state_dict', {})
         
@@ -1023,7 +1023,7 @@ class ModelManager:
             raise ValueError(f"DiT model requires a valid checkpoint. Got: {config.best_ckpt}")
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
         hparams = checkpoint.get('hyper_parameters', {})
         state_dict = checkpoint.get('state_dict', {})
         
@@ -1162,7 +1162,7 @@ class ModelManager:
             raise ValueError(f"Consistency model requires a valid checkpoint. Got: {config.best_ckpt}")
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
         hparams = checkpoint.get('hyper_parameters', {})
         state_dict = checkpoint.get('state_dict', {})
         
@@ -1343,7 +1343,7 @@ class ModelManager:
             raise ValueError(f"OT Flow model requires a valid checkpoint. Got: {config.best_ckpt}")
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+        checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
         hparams = checkpoint.get('hyper_parameters', {})
         state_dict = checkpoint.get('state_dict', {})
         
@@ -1497,7 +1497,7 @@ class ModelManager:
         # Auto-detect Fourier settings and conditioning channels from checkpoint if checkpoint exists
         if config.best_ckpt is not None:
             try:
-                state_dict = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)["state_dict"]
+                state_dict = load_checkpoint(config.best_ckpt, map_location='cuda')["state_dict"]
                 
                 # Check for cross-attention (separate conditioning path)
                 cross_attn_keys = [k for k in state_dict.keys() if 'cross_attn' in k or 'mid_cross' in k]
@@ -1770,7 +1770,7 @@ class ModelManager:
         if verbose:
             print(f"[ModelManager] Loading checkpoint weights from disk...")
             
-        state_dict = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)["state_dict"]
+        state_dict = load_checkpoint(config.best_ckpt, map_location='cuda')["state_dict"]
         
         if verbose:
             print(f"[ModelManager] Checkpoint loaded. Loading state dict into model...")

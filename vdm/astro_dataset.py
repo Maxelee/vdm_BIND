@@ -13,6 +13,17 @@ import joblib
 from .augmentation import Translate, Permutate, Flip, Normalize, Resize, RandomRotate
 from .constants import norms_256 as norms
 
+# Import centralized path configuration
+try:
+    from config import DM_NORM_STATS, GAS_NORM_STATS, STELLAR_NORM_STATS, TRAIN_DATA_ROOT
+except ImportError:
+    # Fallback: compute paths relative to this file
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DM_NORM_STATS = os.path.join(_project_root, 'data', 'dark_matter_normalization_stats.npz')
+    GAS_NORM_STATS = os.path.join(_project_root, 'data', 'gas_normalization_stats.npz')
+    STELLAR_NORM_STATS = os.path.join(_project_root, 'data', 'stellar_normalization_stats.npz')
+    TRAIN_DATA_ROOT = None
+
 class AstroDataset(TensorDataset):
     def __init__(self, file_paths, transform=None, include_halo_mass=False, cosmo_norm=False):
         """
@@ -165,7 +176,7 @@ class AstroDataModule(LightningDataModule):
             batch_size=1,
             num_workers=1,
             dataset='illustris',
-            data_root = '/mnt/home/mlee1/ceph/50Mpc_boxes/subimages/snapdir_090',
+            data_root = TRAIN_DATA_ROOT or '/mnt/home/mlee1/ceph/50Mpc_boxes/subimages/snapdir_090',
             limit_train_samples=None,  # NEW: Limit training samples for fast ablation
             limit_val_samples=None,    # NEW: Limit validation samples
             include_halo_mass=False,   # NEW: Include halo mass as conditioning parameter
@@ -322,7 +333,7 @@ def astro_normalizations(dataset, stellar_stats_path=None, quantile_path=None,
     
     # Load DM normalization stats
     # Use provided path (e.g., for cosmo_norm) or default
-    _dm_stats_path = dm_stats_path or '/mnt/home/mlee1/vdm_BIND/data/dark_matter_normalization_stats.npz'
+    _dm_stats_path = dm_stats_path or DM_NORM_STATS
     if os.path.exists(_dm_stats_path):
         stats = np.load(_dm_stats_path)
         # Handle both old key names (dm_mag_mean) and new key names (dm_target_mean)
@@ -337,7 +348,7 @@ def astro_normalizations(dataset, stellar_stats_path=None, quantile_path=None,
     
     # Load Gas normalization stats
     # Use provided path (e.g., for cosmo_norm) or default
-    _gas_stats_path = gas_stats_path or '/mnt/home/mlee1/vdm_BIND/data/gas_normalization_stats.npz'
+    _gas_stats_path = gas_stats_path or GAS_NORM_STATS
     if os.path.exists(_gas_stats_path):
         stats = np.load(_gas_stats_path)
         # Handle both old key names (gas_mag_mean) and new key names
@@ -401,7 +412,7 @@ def get_astro_data(
     resize=None,
     limit_train_samples=None,
     limit_val_samples=None,
-    stellar_stats_path='/mnt/home/mlee1/vdm_BIND/data/stellar_normalization_stats.npz',  # Z-score normalization
+    stellar_stats_path=STELLAR_NORM_STATS,  # Z-score normalization
     quantile_path=None,  # Quantile normalization (alternative to stellar_stats_path)
     include_halo_mass=False,  # NEW: Include log10(halo_mass) as conditioning parameter
     cosmo_norm=False,  # NEW: Divide fields by Omega_m/Omega_b before log transform

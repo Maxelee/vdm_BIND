@@ -9,7 +9,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.fft import fft2, fftshift, ifft2, ifftshift, fftfreq
 from typing import Tuple, Optional, Union
-import Pk_library as PKL
+
+try:
+    import Pk_library as PKL
+    HAS_PYLIANS = True
+except ImportError:
+    PKL = None
+    HAS_PYLIANS = False
 
 
 def compute_power_spectrum_simple(image: np.ndarray, BoxSize: float = 50.0, 
@@ -32,7 +38,17 @@ def compute_power_spectrum_simple(image: np.ndarray, BoxSize: float = 50.0,
     -------
     tuple
         (Pk, k) - 1D arrays of power spectrum values and wavenumbers
+    
+    Raises
+    ------
+    ImportError
+        If pylians Pk_library is not installed
     """
+    if not HAS_PYLIANS:
+        raise ImportError(
+            "Pk_library (pylians) is required for power spectrum computation. "
+            "Install it with: pip install Pylians"
+        )
     # Compute overdensity
     delta = image / np.mean(image, dtype=np.float64)
     delta -= 1.0
@@ -67,6 +83,11 @@ def compute_power_spectrum_batch(images: np.ndarray, BoxSize: float = 6.25,
     tuple
         (k, Pk, Nmodes) - wavenumbers, power spectra array (N, Nk), number of modes
     """
+    if not HAS_PYLIANS:
+        raise ImportError(
+            "Pk_library (pylians) is required for power spectrum computation. "
+            "Install it with: pip install Pylians"
+        )
     images = np.array(images, dtype=np.float64)
     
     # Compute overdensity for batch
@@ -108,6 +129,11 @@ def compute_cross_power_spectrum(image1: np.ndarray, image2: np.ndarray,
     tuple
         (k, r, Pk) - wavenumbers, cross-correlation coefficient, cross-power
     """
+    if not HAS_PYLIANS:
+        raise ImportError(
+            "Pk_library (pylians) is required for power spectrum computation. "
+            "Install it with: pip install Pylians"
+        )
     # Compute overdensities
     delta1 = image1 / np.mean(image1, dtype=np.float64)
     delta1 -= 1.0

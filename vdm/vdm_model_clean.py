@@ -855,7 +855,8 @@ class CleanVDM(nn.Module):
         Returns:
             Generated samples (B, C, H, W) or (n_steps, B, C, H, W) if return_all=True
         """
-        # Ensure model is in eval mode for sampling
+        # Ensure model is in eval mode for sampling (restored at end)
+        was_training = self.score_model.training
         self.score_model.eval()
         
         # Initialize from noise
@@ -882,6 +883,10 @@ class CleanVDM(nn.Module):
             
             if return_all:
                 zs.append(z)
+        
+        # Restore training mode if it was active before sampling
+        if was_training:
+            self.score_model.train()
         
         if return_all:
             return torch.stack(zs, dim=0)

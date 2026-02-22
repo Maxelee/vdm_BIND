@@ -14,7 +14,13 @@ from .model_manager import ModelManager
 from .sampling import sample
 
 from vdm.constants import norms_256 as norms
-import MAS_library as MASL
+
+try:
+    import MAS_library as MASL
+    HAS_MASL = True
+except ImportError:
+    MASL = None
+    HAS_MASL = False
 
 class BIND:
     """
@@ -156,7 +162,15 @@ class BIND:
         
         Returns:
             np.ndarray: 3D grid of shape (gridsize, gridsize, gridsize) or 2D (gridsize, gridsize).
+        
+        Raises:
+            ImportError: If MAS_library (pylians) is not installed.
         """
+        if not HAS_MASL:
+            raise ImportError(
+                "MAS_library (pylians) is required for voxelization. "
+                "Install it with: pip install Pylians"
+            )
         if self.verbose:
             print("[BIND] Voxelizing simulation...")
         

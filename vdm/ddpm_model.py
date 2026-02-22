@@ -355,13 +355,16 @@ class LightScoreModel(LightningModule):
         if param_conditioning is not None:
             condition.append(param_conditioning)
         
-        # Generate samples
+        # Generate samples, preserving training mode
+        was_training = self.training
         samples = self.sample(
             shape=(batch_size, C_out, H, W),
             condition=condition,
             steps=n_sampling_steps or self.n_sampling_steps,
             verbose=verbose,
         )
+        if was_training:
+            self.train()
         
         return samples
     

@@ -830,6 +830,7 @@ class UNetVDM(nn.Module):
         downsample_cross_attn_cond: bool = True,  # NEW: Downsample conditioning for cross-attention (4-8x speedup)
         cross_attn_cond_downsample_factor: int = 2,  # NEW: Downsample factor for conditioning
         cross_attn_max_resolution: int = 128,  # NEW: Maximum resolution for cross-attention (skip higher res)
+        input_spatial_size: int = 128,  # NEW: Input image spatial size (for cross-attention resolution calc)
     ):
         super().__init__()
         self.embedding_dim = embedding_dim
@@ -850,6 +851,7 @@ class UNetVDM(nn.Module):
         self.downsample_cross_attn_cond = downsample_cross_attn_cond  # Speed optimization
         self.cross_attn_cond_downsample_factor = cross_attn_cond_downsample_factor  # Speed optimization
         self.cross_attn_max_resolution = cross_attn_max_resolution  # Speed optimization
+        self.input_spatial_size = input_spatial_size  # Input image spatial size
 
 
 
@@ -1023,10 +1025,8 @@ class UNetVDM(nn.Module):
             self.down_channels.append(ch_out)  # Store for skip connections: [48, 96, 192, 384]
             
             # Calculate ACTUAL spatial resolution at this encoder level
-            # Assume input is 128x128, resolution halves with each down block
-            # Block 0: 128 -> 64, Block 1: 64 -> 32, Block 2: 32 -> 16, Block 3: 16 -> 8
-            input_spatial_size = 128  # Standard input size for this model
-            current_resolution = input_spatial_size // (2 ** i)  # [128, 64, 32, 16] for i=[0,1,2,3]
+            # Assume input is input_spatial_size, resolution halves with each down block
+            current_resolution = self.input_spatial_size // (2 ** i)
             
             # Create ResNet block
             down_resnet = ResnetBlock(ch_in=ch_in, ch_out=ch_out, **resnet_params)
@@ -1116,10 +1116,10 @@ class UNetVDM(nn.Module):
             up_ch_out = current_ch // 2  # Output channels
             
             # Calculate ACTUAL spatial resolution at this decoder level
-            # Bottleneck is at 8x8 (after 4 down blocks from 128x128)
-            # Decoder upsamples: Block 0: 8 -> 16, Block 1: 16 -> 32, Block 2: 32 -> 64, Block 3: 64 -> 128
-            bottleneck_spatial_size = 128 // (2 ** n_blocks)  # 128 // 16 = 8
-            current_resolution = bottleneck_spatial_size * (2 ** (i + 1))  # [16, 32, 64, 128] for i=[0,1,2,3]
+            # Bottleneck is at reduced size (after n_blocks down blocks)
+            # Decoder upsamples progressively back to original size
+            bottleneck_spatial_size = self.input_spatial_size // (2 ** n_blocks)
+            current_resolution = bottleneck_spatial_size * (2 ** (i + 1))
             
             # Create the up block
             up_resnet = ResnetBlock(ch_in=up_ch_in, ch_out=up_ch_out, **resnet_params)

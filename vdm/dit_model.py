@@ -334,18 +334,20 @@ class LightDiTVDM(LightningModule):
     def draw_samples(
         self,
         conditioning: Tensor,
-        batch_size: Optional[int] = None,
-        param_conditioning: Optional[Tensor] = None,
+        batch_size: int,
         n_sampling_steps: Optional[int] = None,
+        param_conditioning: Optional[Tensor] = None,
+        verbose: bool = False,
     ) -> Tensor:
         """
         Draw samples compatible with BIND interface.
         
         Args:
             conditioning: (B, C_cond, H, W) - spatial conditioning
-            batch_size: Not used (inferred from conditioning)
-            param_conditioning: (B, N_params) - cosmological parameters
+            batch_size: Number of samples (inferred from conditioning if needed)
             n_sampling_steps: Number of sampling steps
+            param_conditioning: (B, N_params) - cosmological parameters
+            verbose: Show progress (unused, for interface compatibility)
         
         Returns:
             (B, C, H, W) samples

@@ -15,6 +15,15 @@ from vdm.astro_dataset import get_astro_data
 from vdm import networks_clean as networks
 from vdm import vdm_model_clean as vdm_module
 from vdm import vdm_model_triple as vdm_triple_module
+from vdm.utils import load_checkpoint
+
+try:
+    from config import TRAIN_DATA_ROOT as _TRAIN_ROOT
+    _TRAIN_DATA_TEST = os.path.join(_TRAIN_ROOT, 'test')
+    _TRAIN_DATA_TRAIN = os.path.join(_TRAIN_ROOT, 'train')
+except ImportError:
+    _TRAIN_DATA_TEST = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+    _TRAIN_DATA_TRAIN = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
 
 
 def _load_dataset_if_requested(config, skip_data_loading, verbose=False):
@@ -24,9 +33,9 @@ def _load_dataset_if_requested(config, skip_data_loading, verbose=False):
 		return None
 
 	if not getattr(config, 'train_samples', None):
-		data_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/test/'
+		data_root = _TRAIN_DATA_TEST
 	else:
-		data_root = '/mnt/home/mlee1/ceph/train_data_rotated2_128_cpu/train/'
+		data_root = _TRAIN_DATA_TRAIN
 
 	hydro = get_astro_data(
 		config.dataset,
@@ -56,7 +65,7 @@ def initialize_triple(config, verbose=False, skip_data_loading=False):
 	if not config.best_ckpt or not os.path.exists(config.best_ckpt):
 		raise ValueError(f"Triple model requires a valid checkpoint. Got: {config.best_ckpt}")
 
-	checkpoint = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)
+	checkpoint = load_checkpoint(config.best_ckpt, map_location='cuda')
 	hparams = checkpoint.get('hyper_parameters', {})
 
 	if verbose:
@@ -222,7 +231,7 @@ def initialize_ddpm(config, verbose=False, skip_data_loading=False):
 		raise ValueError(f"DDPM model requires a valid checkpoint. Got: {config.best_ckpt}")
 
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
-	checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+	checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
 	hparams = checkpoint.get('hyper_parameters', {})
 	state_dict = checkpoint.get('state_dict', {})
 
@@ -439,7 +448,7 @@ def initialize_clean(config, verbose=False, skip_data_loading=False):
 
 	if config.best_ckpt is not None:
 		try:
-			state_dict = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)["state_dict"]
+			state_dict = load_checkpoint(config.best_ckpt, map_location='cuda')["state_dict"]
 
 			cross_attn_keys = [k for k in state_dict.keys() if 'cross_attn' in k or 'mid_cross' in k]
 			has_cross_attention = len(cross_attn_keys) > 0
@@ -674,7 +683,7 @@ def initialize_clean(config, verbose=False, skip_data_loading=False):
 	if verbose_flag:
 		print(f"[ModelManager] Loading checkpoint weights from disk...")
 
-	state_dict = torch.load(config.best_ckpt, map_location='cuda', weights_only=False)["state_dict"]
+	state_dict = load_checkpoint(config.best_ckpt, map_location='cuda')["state_dict"]
 
 	if verbose_flag:
 		print(f"[ModelManager] Checkpoint loaded. Loading state dict into model...")
@@ -721,7 +730,7 @@ def initialize_ot_flow(config, verbose=False, skip_data_loading=False):
 		raise ValueError(f"OT Flow model requires a valid checkpoint. Got: {config.best_ckpt}")
 
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
-	checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+	checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
 	hparams = checkpoint.get('hyper_parameters', {})
 	state_dict = checkpoint.get('state_dict', {})
 
@@ -846,7 +855,7 @@ def initialize_consistency(config, verbose=False, skip_data_loading=False):
 		raise ValueError(f"Consistency model requires a valid checkpoint. Got: {config.best_ckpt}")
 
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
-	checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+	checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
 	hparams = checkpoint.get('hyper_parameters', {})
 	state_dict = checkpoint.get('state_dict', {})
 
@@ -988,7 +997,7 @@ def initialize_dit(config, verbose=False, skip_data_loading=False):
 		raise ValueError(f"DiT model requires a valid checkpoint. Got: {config.best_ckpt}")
 
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
-	checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+	checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
 	hparams = checkpoint.get('hyper_parameters', {})
 	state_dict = checkpoint.get('state_dict', {})
 
@@ -1094,7 +1103,7 @@ def initialize_interpolant(config, verbose=False, skip_data_loading=False):
 		raise ValueError(f"Interpolant model requires a valid checkpoint. Got: {config.best_ckpt}")
 
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
-	checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+	checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
 	hparams = checkpoint.get('hyper_parameters', {})
 	state_dict = checkpoint.get('state_dict', {})
 
@@ -1207,7 +1216,7 @@ def initialize_dsm(config, verbose=False, skip_data_loading=False):
 		raise ValueError(f"DSM model requires a valid checkpoint. Got: {config.best_ckpt}")
 
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
-	checkpoint = torch.load(config.best_ckpt, map_location=device, weights_only=False)
+	checkpoint = load_checkpoint(config.best_ckpt, map_location=device)
 	hparams = checkpoint.get('hyper_parameters', {})
 	state_dict = checkpoint.get('state_dict', {})
 
