@@ -507,6 +507,9 @@ def create_vdm_model(cfg, min_vals, max_vals, use_param_conditioning):
         param_max=max_vals,
         use_param_prediction=cfg.get_bool('use_param_prediction', False),
         use_auxiliary_mask=False,
+        # FiLM conditioning
+        film_init_std=cfg.get_float('film_init_std', 0.01),  # FiLM layer initialization
+        film_init_strategy=cfg.get_str('film_init_strategy', 'default'),  # FiLM init strategy
         # Cross-attention parameters
         use_cross_attention=cfg.get_bool('use_cross_attention', False),
         cross_attention_location=cfg.get_str('cross_attention_location', 'bottleneck'),
@@ -1100,6 +1103,11 @@ Examples:
             use_param_conditioning = True
             print(f"📊 Halo mass conditioning: ENABLED (halo mass only, log10 range [{halo_mass_min}, {halo_mass_max}])")
     
+    # NEW: Cosmological normalization - divide fields by Omega_m/Omega_b before log transform
+    cosmo_norm = cfg.get_bool('cosmo_norm', False)
+    if cosmo_norm:
+        print("🌌 COSMO_NORM ENABLED: Dividing fields by Omega_m/Omega_b before log transform")
+    
     # Training parameters
     max_epochs = cfg.get_int('max_epochs', 100)
     limit_train_batches = cfg.get_float('limit_train_batches', 1.0)
@@ -1179,6 +1187,17 @@ Examples:
     # NEW: Pass include_halo_mass to datamodule
     if include_halo_mass:
         datamodule_kwargs['include_halo_mass'] = True
+    
+    # NEW: Pass cosmo_norm to datamodule along with the cosmo_norm stats paths
+    if cosmo_norm:
+        datamodule_kwargs['cosmo_norm'] = True
+        # Use cosmo_norm-specific stats paths from config
+        dm_stats_path = cfg.get_optional('dm_stats_path')
+        gas_stats_path = cfg.get_optional('gas_stats_path')
+        if dm_stats_path:
+            datamodule_kwargs['dm_stats_path'] = dm_stats_path
+        if gas_stats_path:
+            datamodule_kwargs['gas_stats_path'] = gas_stats_path
     
     datamodule = get_astro_data(**datamodule_kwargs)
     

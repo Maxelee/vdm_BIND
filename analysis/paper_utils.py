@@ -55,7 +55,8 @@ PIXEL_TO_MPC = BOX_SIZE / GRID_SIZE
 
 # Model configuration - change this to switch between different trained models
 # MODEL_NAME = 'clean_vdm_aggressive_stellar'
-MODEL_NAME = 'clean_vdm_aggressive_stellar_nofocus'
+# MODEL_NAME = 'clean_vdm_regularized'
+MODEL_NAME = 'clean_vdm_gas_and_star_lowmass'
 
 # Channel names for output fields
 CHANNEL_NAMES = ['Hydro DM', 'Gas', 'Star']

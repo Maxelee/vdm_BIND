@@ -119,6 +119,7 @@ def load_simulation(nbody_path: Union[str, Path], hydro_snapdir: Union[str, Path
 
 def load_halo_catalog(fof_path: Union[str, Path], 
                       mass_threshold: float = 1e13,
+                      mass_upper: Optional[float] = None,
                       snapnum: int = 90) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load halo catalog from FOF/Subfind files.
@@ -129,6 +130,8 @@ def load_halo_catalog(fof_path: Union[str, Path],
         Path to FOF directory or specific FOF file
     mass_threshold : float
         Minimum halo mass in M_sun/h (default: 1e13)
+    mass_upper : float, optional
+        Maximum halo mass in M_sun/h. If None, no upper limit is applied.
     snapnum : int
         Snapshot number (default: 90)
         
@@ -180,9 +183,15 @@ def load_halo_catalog(fof_path: Union[str, Path],
         
         # Apply mass threshold
         mask = halo_mass > mass_threshold
+        if mass_upper is not None:
+            mask = mask & (halo_mass <= mass_upper)
         return halo_pos[mask], halo_mass[mask], halo_radii[mask]
     
     return np.array([]), np.array([]), np.array([])
+
+
+# Alias for backward compatibility
+load_halos = load_halo_catalog
 
 
 def project_particles_2d(positions: np.ndarray, masses: np.ndarray, 

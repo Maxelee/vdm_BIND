@@ -138,7 +138,7 @@ def _get_cached_file_list(data_root, cache_file=None):
     all_files = []
     for root, dirs, files in os.walk(data_root):
         for f in files:
-            if 'halo' in f and f.endswith('.npz'):
+            if 'halo' in f and 'rot_0' in f and f.endswith('.npz'):
                 all_files.append(os.path.join(root, f))
     
     all_files = sorted(all_files)

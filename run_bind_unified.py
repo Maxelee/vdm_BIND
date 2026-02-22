@@ -422,8 +422,25 @@ def process_simulation(sim_info, args):
         # This saves halo_*.npz files in model_dir
         bind.extract_halos(omega_m=om0)
         
-        num_halos = len(metadata['masses'])
+        # Use actual number of extracted halos (may differ from cached metadata
+        # if halo catalog changed or extraction filters differ)
+        num_halos = len(bind.extracted['metadata'])
         conditional_params = np.reshape(base_params * num_halos, (num_halos, -1))
+        
+        # Update metadata from actual extraction so pasting uses correct halo info
+        extracted_meta = bind.extracted['metadata']
+        metadata = {
+            'masses': np.array([m['mass'] for m in extracted_meta]),
+            'radii': np.array([m['radius'] for m in extracted_meta]),
+            'positions': np.array([m['position'] for m in extracted_meta]),
+            'center_pixels': np.array([m['center_pixel'] for m in extracted_meta]),
+        }
+        # Update cached metadata file to stay consistent
+        np.savez(halo_metadata_path,
+                 masses=metadata['masses'],
+                 radii=metadata['radii'],
+                 positions=metadata['positions'],
+                 center_pixels=metadata['center_pixels'])
         
         # Generate halos and clean up halo_*.npz files
         bind.generate_halos(batch_size=args.batch_size, conditional_params=conditional_params,

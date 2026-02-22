@@ -307,15 +307,55 @@ class UpDownBlock(nn.Module):
         return x
 
 class FiLMLayer(nn.Module):
-    """Feature-wise Linear Modulation layer for stronger conditioning"""
-    def __init__(self, condition_dim, feature_dim):
+    """Feature-wise Linear Modulation layer for stronger conditioning.
+    
+    FiLM applies: output = gamma * features + beta
+    where gamma and beta are predicted from the conditioning signal.
+    
+    Initialization strategies:
+    - 'default': Small random init (std=init_std) for both gamma and beta weights
+    - 'zeros': Zero weights (NOT recommended - causes dead gradients)
+    - 'separate': Larger init for gamma (stronger scaling), smaller for beta
+    - 'kaiming': Kaiming normal init (theory-backed for ReLU networks)
+    """
+    def __init__(self, condition_dim, feature_dim, init_std: float = 0.01, 
+                 init_strategy: str = 'default'):
         super().__init__()
+        self.feature_dim = feature_dim
+        self.init_std = init_std
+        self.init_strategy = init_strategy
+        
         # Predict both scale (gamma) and shift (beta)
         self.film_proj = nn.Linear(condition_dim, feature_dim * 2)
-        # Initialize with small random values to enable gradient flow
-        # Small std (0.01) keeps behavior near identity but allows learning
-        nn.init.normal_(self.film_proj.weight, mean=0.0, std=0.01)
-        nn.init.zeros_(self.film_proj.bias)
+        
+        # Apply initialization strategy
+        if init_strategy == 'zeros':
+            # NOT RECOMMENDED: Zero weights cause dead gradients
+            nn.init.zeros_(self.film_proj.weight)
+            nn.init.zeros_(self.film_proj.bias)
+        elif init_strategy == 'separate':
+            # Separate init: larger for gamma (want stronger scaling), smaller for beta
+            # First half of weights/bias is for gamma, second half for beta
+            gamma_weights = self.film_proj.weight[:feature_dim]
+            beta_weights = self.film_proj.weight[feature_dim:]
+            gamma_bias = self.film_proj.bias[:feature_dim]
+            beta_bias = self.film_proj.bias[feature_dim:]
+            
+            # Gamma: larger init for stronger modulation
+            nn.init.normal_(gamma_weights, mean=0.0, std=init_std)
+            nn.init.zeros_(gamma_bias)  # The +1 in forward handles identity
+            
+            # Beta: smaller init (shift should start near zero)
+            nn.init.normal_(beta_weights, mean=0.0, std=init_std * 0.1)
+            nn.init.zeros_(beta_bias)
+        elif init_strategy == 'kaiming':
+            # Kaiming init - theoretically motivated for deep networks
+            nn.init.kaiming_normal_(self.film_proj.weight, mode='fan_in', nonlinearity='linear')
+            nn.init.zeros_(self.film_proj.bias)
+        else:  # 'default'
+            # Small random init - safe but may be too weak
+            nn.init.normal_(self.film_proj.weight, mean=0.0, std=init_std)
+            nn.init.zeros_(self.film_proj.bias)
         
     def forward(self, features, condition):
         # features: (B, C, H, W)
@@ -335,13 +375,15 @@ class FiLMLayer(nn.Module):
 
 
 class ResnetBlock(nn.Module):
-    def __init__(self,ch_in,ch_out=None,condition_dim=None,dropout_prob=0.0,norm_groups=32,use_film=True):
+    def __init__(self,ch_in,ch_out=None,condition_dim=None,dropout_prob=0.0,norm_groups=32,use_film=True,film_init_std=0.01,film_init_strategy='default'):
         super().__init__()
         ch_out = ch_in if ch_out is None else ch_out
         self.ch_in = ch_in
         self.ch_out = ch_out
         self.condition_dim = condition_dim
         self.use_film = use_film
+        self.film_init_std = film_init_std
+        self.film_init_strategy = film_init_strategy
         
         self.net1 = nn.Sequential(
             nn.GroupNorm(num_groups=norm_groups, num_channels=ch_in),
@@ -352,7 +394,7 @@ class ResnetBlock(nn.Module):
         if condition_dim is not None:
             if use_film:
                 # Use FiLM layer for stronger conditioning
-                self.film_layer = FiLMLayer(condition_dim, ch_out)
+                self.film_layer = FiLMLayer(condition_dim, ch_out, init_std=film_init_std, init_strategy=film_init_strategy)
                 self.cond_proj = None  # Not used with FiLM
             else:
                 # Original projection-based conditioning
@@ -774,6 +816,9 @@ class UNetVDM(nn.Module):
         param_min: list = None,
         param_max: list = None,
         use_auxiliary_mask: bool = False,  # NEW: Enable auxiliary mask head
+        # FiLM conditioning
+        film_init_std: float = 0.01,  # FiLM layer initialization std (default=0.01 for backward compat)
+        film_init_strategy: str = 'default',  # FiLM init strategy: 'default', 'separate', 'kaiming', 'zeros'
         # Cross-attention parameters
         use_cross_attention: bool = False,  # NEW: Enable cross-attention
         cross_attention_heads: int = 8,  # NEW: Number of cross-attention heads  
@@ -790,6 +835,8 @@ class UNetVDM(nn.Module):
         self.embedding_dim = embedding_dim
         self.use_fourier_features = use_fourier_features
         self.legacy_fourier = legacy_fourier
+        self.film_init_std = film_init_std  # Store for reference
+        self.film_init_strategy = film_init_strategy  # Store for reference
         self.gamma_min = gamma_min
         self.gamma_max = gamma_max
         self.add_attention = add_attention
@@ -911,7 +958,12 @@ class UNetVDM(nn.Module):
             condition_dim=total_condition_dim,
             dropout_prob=dropout_prob,
             norm_groups=norm_groups,
+            film_init_std=film_init_std,  # Pass through FiLM initialization std
+            film_init_strategy=film_init_strategy,  # Pass through FiLM initialization strategy
         )
+        
+        if film_init_std != 0.01 or film_init_strategy != 'default':
+            print(f"✓ FiLM initialization: std={film_init_std}, strategy='{film_init_strategy}'")
 
         self.embed_t_conditioning = nn.Sequential(
             nn.Linear(embedding_dim, embedding_dim * 4),

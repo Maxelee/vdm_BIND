@@ -49,20 +49,20 @@ source /mnt/home/mlee1/venvs/torch3/bin/activate
 
 # Suite and Model Configuration
 SUITE=${SUITE:-"cv"}  # cv, sb35, or 1p
-MODEL_NAME=${MODEL_NAME:-"clean_vdm_regularized_bijective"}
-CONFIG_PATH=${CONFIG_PATH:-"/mnt/home/mlee1/vdm_BIND/configs/clean_vdm_regularized_bijective.ini"}
+MODEL_NAME=${MODEL_NAME:-"clean_vdm_gas_and_star_lowmass"}
+CONFIG_PATH=${CONFIG_PATH:-"/mnt/home/mlee1/vdm_BIND/configs/clean_vdm_gas_and_star.ini"}
 
 # Output Configuration
 BASE_OUTPATH=${BASE_OUTPATH:-"/mnt/home/mlee1/ceph/BIND2d_new"}
 
 # Simulation Parameters
-MASS_THRESHOLD=${MASS_THRESHOLD:-1e13}
+MASS_THRESHOLD=${MASS_THRESHOLD:-1e12}
 GRIDSIZE=${GRIDSIZE:-1024}
 USE_ENHANCED=${USE_ENHANCED:-"--use_enhanced"}
 REALIZATIONS=${REALIZATIONS:-10}
 
 # Control flags - set to empty string to disable
-REGENERATE=${REGENERATE:-""}
+REGENERATE=${REGENERATE:-"--regenerate"}
 REGENERATE_ALL=${REGENERATE_ALL:-""}
 REPASTE=${REPASTE:-""}
 DO_HYDRO_REPLACE=${DO_HYDRO_REPLACE:-""}

@@ -94,3 +94,6 @@ analysis/notebooks/debug_*.ipynb
 # Slurm logs
 *.o[0-9]*
 *.e[0-9]*
+# Generated analysis images (regenerate from notebooks)
+analysis/notebooks/*.png
+analysis/figures/vdm_gas_star/*.png

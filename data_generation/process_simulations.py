@@ -11,7 +11,7 @@ import mpi4py.MPI as MPI
 
 # Add parent directory to path for vdm imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from vdm.io_utils import load_simulation, load_halos, project_particles_2d
+from vdm.io_utils import load_simulation, load_halo_catalog, project_particles_2d
 
 # Command-line arguments
 parser = argparse.ArgumentParser(description='Process IllustrisTNG simulations with MPI parallelization.')
@@ -27,6 +27,12 @@ parser.add_argument('--nbody_base', type=str, default='/mnt/home/mlee1/Sims/Illu
 parser.add_argument('--fof_nbody_base', type=str, default='/mnt/ceph/users/camels/FOF_Subfind/IllustrisTNG_DM/L50n512/SB35')
 parser.add_argument('--param_file', type=str, default='/mnt/home/mlee1/50Mpc_boxes/data/param_df.csv')
 parser.add_argument('--num_rotations', type=int, default=10)
+parser.add_argument('--mass_threshold', type=float, default=1e13,
+                    help='Minimum halo mass in M_sun/h (default: 1e13)')
+parser.add_argument('--mass_upper', type=float, default=None,
+                    help='Maximum halo mass in M_sun/h (default: None = no upper limit)')
+parser.add_argument('--output_suffix', type=str, default='',
+                    help='Suffix to append to output directory name (e.g. "_lowmass")')
 
 args = parser.parse_args()
 
@@ -314,7 +320,8 @@ def process_single_simulation(sim_id, output_path, box_size=50.0, npix=1024):
     
     params = load_params(sim_id)
     fof_file = os.path.join(fof_nbody_base, f'SB35_{sim_id}', 'fof_subhalo_tab_090.hdf5')
-    halo_pos, halo_mass = load_halos(fof_file, mass_threshold=1e13)
+    halo_pos, halo_mass, _ = load_halo_catalog(fof_file, mass_threshold=args.mass_threshold, 
+                                              mass_upper=args.mass_upper)
     
     if len(halo_pos) == 0:
         print(f"Rank {rank}: Sim {sim_id}: No halos found, skipping")
@@ -384,13 +391,15 @@ def process_single_simulation(sim_id, output_path, box_size=50.0, npix=1024):
     print(f"Rank {rank}: Sim {sim_id}: Complete ({halos_processed} processed, {halos_skipped} skipped)")
 
 if __name__ == '__main__':
-    output_dir_base = os.path.join(output_base_root, 'train_data_rotated2_128_cpu')
+    output_dir_base = os.path.join(output_base_root, f'train_data_rotated2_128_cpu{args.output_suffix}')
     
     if rank == 0:
         os.makedirs(os.path.join(output_dir_base, 'train'), exist_ok=True)
         os.makedirs(os.path.join(output_dir_base, 'test'), exist_ok=True)
         print(f"Output directory: {output_dir_base}")
         print(f"Total simulations: {start_sim} to {end_sim}")
+        print(f"Mass range: {args.mass_threshold:.0e}" + (f" to {args.mass_upper:.0e}" if args.mass_upper else " (no upper limit)"))
+        print(f"Rotations per halo: {num_rotations}")
         print(f"Using {size} MPI ranks")
         print()
         
